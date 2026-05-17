@@ -148,9 +148,27 @@ Get-Content   C:\ds1hunter\logs\api.log
 
 ---
 
+## Legal Disclaimer
+
+DS1 Hunter is designed for authorized security testing only.
+
+You must have explicit written permission from the owner of any system before running DS1 Hunter against it. Using this tool against systems you do not own or do not have authorization to test is illegal and may result in criminal charges under computer crime laws in your country.
+
+Authorized use includes:
+- Testing systems you own
+- Testing systems with written permission from the owner
+- Penetration testing engagements with a signed scope of work
+- Security research in isolated lab environments
+
+DigitalSecurity1 and its contributors are not responsible for any damage, data loss, legal consequences, or misuse resulting from the use of this software. By downloading and using DS1 Hunter, you agree that you are solely responsible for how you use it and that you will only use it on systems you are authorized to test.
+
+**Use it ethically. Use it legally. Use it responsibly.**
+
+---
+
 ## License
 
 Copyright (c) 2026 DigitalSecurity1. All rights reserved.
 
-DS1 Hunter is free to download and use for security testing purposes.
+DS1 Hunter is free to download and use for authorized security testing purposes.
 You may not redistribute, resell, or reverse engineer this software.
