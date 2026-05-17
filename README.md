@@ -1,8 +1,10 @@
 # DS1 Hunter
 
-> **"Hunt. Chain. Prove."** — by DigitalSecurity1
+> **"Hunt. Chain. Prove."** - by DigitalSecurity1
 
 Advanced web application security testing platform with a 5-phase attack chain engine, Think Mode AI, and full proof-of-exploitation generation.
+
+Free to download and use for security professionals and penetration testers.
 
 ---
 
@@ -10,11 +12,11 @@ Advanced web application security testing platform with a 5-phase attack chain e
 
 DS1 Hunter runs a structured 5-phase pipeline against a target:
 
-1. **Endpoint Discovery** — spider, JS analysis, parameter mining
-2. **Authorization Analysis** — BOLA, privilege escalation, auth bypass
-3. **Attack Chain Mapping** — chains vulnerabilities into exploit paths
-4. **Business Logic Testing** — race conditions, mass assignment, sequencer
-5. **Exploit Proof Generation** — working PoC with report export
+1. **Endpoint Discovery** - spider, JS analysis, parameter mining
+2. **Authorization Analysis** - BOLA, privilege escalation, auth bypass
+3. **Attack Chain Mapping** - chains vulnerabilities into exploit paths
+4. **Business Logic Testing** - race conditions, mass assignment, sequencer
+5. **Exploit Proof Generation** - working PoC with report export
 
 Supports 40+ vulnerability classes including SQLi, XSS, SSRF, SSTI, CORS, JWT, GraphQL, WebSocket, mobile, memory corruption, and more.
 
@@ -148,6 +150,7 @@ Get-Content   C:\ds1hunter\logs\api.log
 
 ## License
 
-Proprietary software. All rights reserved.
-Copyright (c) 2026 DigitalSecurity1.
-Unauthorized copying, distribution, or reverse engineering is prohibited.
+Copyright (c) 2026 DigitalSecurity1. All rights reserved.
+
+DS1 Hunter is free to download and use for security testing purposes.
+You may not redistribute, resell, or reverse engineer this software.
