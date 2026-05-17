@@ -1,0 +1,153 @@
+# DS1 Hunter
+
+> **"Hunt. Chain. Prove."** — by DigitalSecurity1
+
+Advanced web application security testing platform with a 5-phase attack chain engine, Think Mode AI, and full proof-of-exploitation generation.
+
+---
+
+## What it does
+
+DS1 Hunter runs a structured 5-phase pipeline against a target:
+
+1. **Endpoint Discovery** — spider, JS analysis, parameter mining
+2. **Authorization Analysis** — BOLA, privilege escalation, auth bypass
+3. **Attack Chain Mapping** — chains vulnerabilities into exploit paths
+4. **Business Logic Testing** — race conditions, mass assignment, sequencer
+5. **Exploit Proof Generation** — working PoC with report export
+
+Supports 40+ vulnerability classes including SQLi, XSS, SSRF, SSTI, CORS, JWT, GraphQL, WebSocket, mobile, memory corruption, and more.
+
+---
+
+## System Requirements
+
+| Platform | OS | RAM | Disk |
+|----------|-----|-----|------|
+| Linux | Kali 2024+, Debian 12, Ubuntu 22.04/24.04 | 4 GB+ | 2 GB+ |
+| macOS | Ventura 13+, Sonoma 14+, Sequoia 15+ (Intel + Apple Silicon) | 4 GB+ | 2 GB+ |
+| Windows | Windows 10 21H2+, Windows 11, Server 2022+ | 4 GB+ | 2 GB+ |
+
+Python 3.10+ and Node.js 16+ are installed automatically by the installer.
+
+---
+
+## Download
+
+Go to the [Releases](../../releases/latest) page and download the installer for your platform.
+
+| Platform | File | Verify |
+|----------|------|--------|
+| Linux | `ds1hunter-v1.0.0-linux.run` | `.sha256` |
+| macOS | `ds1hunter-v1.0.0-macos.run` | `.sha256` |
+| Windows | `ds1hunter-v1.0.0-windows.ps1` | `.sha256` |
+
+---
+
+## Install
+
+### Linux (Kali, Debian, Ubuntu)
+
+```bash
+sudo bash ds1hunter-v1.0.0-linux.run
+```
+
+See [docs/linux.md](docs/linux.md) for full details.
+
+### macOS (Ventura, Sonoma, Sequoia)
+
+```bash
+sudo bash ds1hunter-v1.0.0-macos.run
+```
+
+If macOS Gatekeeper blocks it:
+```bash
+xattr -d com.apple.quarantine ds1hunter-v1.0.0-macos.run
+sudo bash ds1hunter-v1.0.0-macos.run
+```
+
+See [docs/macos.md](docs/macos.md) for full details.
+
+### Windows (PowerShell as Administrator)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ds1hunter-v1.0.0-windows.ps1
+```
+
+See [docs/windows.md](docs/windows.md) for full details.
+
+---
+
+## After Install
+
+Once installed, open your browser:
+
+| Service | URL |
+|---------|-----|
+| Web UI | https://127.0.0.1:13000 |
+| API | https://127.0.0.1:18000 |
+
+The installer prints your admin credentials once at the end. Save them.
+
+CLI usage:
+```bash
+ds1hunter https://target.com --depth deep --think
+ds1hunter https://target.com --depth aggressive --think --waf-bypass
+ds1hunter --help
+```
+
+---
+
+## Verify Your Download
+
+Always verify the SHA256 checksum before running:
+
+```bash
+# Linux
+sha256sum ds1hunter-v1.0.0-linux.run
+cat ds1hunter-v1.0.0-linux.run.sha256
+
+# macOS
+shasum -a 256 ds1hunter-v1.0.0-macos.run
+cat ds1hunter-v1.0.0-macos.run.sha256
+
+# Windows (PowerShell)
+Get-FileHash ds1hunter-v1.0.0-windows.ps1 -Algorithm SHA256
+```
+
+Compare the output. They must match exactly.
+
+---
+
+## Service Management
+
+### Linux
+```bash
+systemctl start  ds1hunter-api ds1hunter-ui
+systemctl stop   ds1hunter-api ds1hunter-ui
+systemctl status ds1hunter-api ds1hunter-ui
+journalctl -u ds1hunter-api -f
+```
+
+### macOS
+```bash
+launchctl load   /Library/LaunchDaemons/com.ds1hunter.api.plist
+launchctl unload /Library/LaunchDaemons/com.ds1hunter.api.plist
+tail -f /var/log/ds1hunter/api.log
+```
+
+### Windows (PowerShell as Administrator)
+```powershell
+Start-Service DS1HunterAPI, DS1HunterUI
+Stop-Service  DS1HunterAPI, DS1HunterUI
+Get-Service   DS1HunterAPI, DS1HunterUI
+Get-Content   C:\ds1hunter\logs\api.log
+```
+
+---
+
+## License
+
+Proprietary software. All rights reserved.
+Copyright (c) 2026 DigitalSecurity1.
+Unauthorized copying, distribution, or reverse engineering is prohibited.
