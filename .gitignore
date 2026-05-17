@@ -1,0 +1,3 @@
+# Nothing to ignore -- this repo contains only docs and release assets are attached via GitHub Releases
+*.DS_Store
+Thumbs.db
