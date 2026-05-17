@@ -103,12 +103,17 @@ Once installed, open your browser:
 
 The installer prints your admin credentials once at the end. Save them.
 
-CLI usage:
+**DS1 Hunter runs as a self-hosted web application.** The Web UI at `https://127.0.0.1:13000` is the main interface — all 43 modules (Proxy, Repeater, Intruder, Spider, API Audit, Code Review, Mobile, and more) are accessible from there.
+
+The CLI is a shortcut specifically for the Hunt scanner — the 5-phase attack pipeline:
+
 ```bash
 ds1hunter https://target.com --depth deep --think
 ds1hunter https://target.com --depth aggressive --think --waf-bypass
 ds1hunter --help
 ```
+
+For everything else, use the Web UI.
 
 ---
 
