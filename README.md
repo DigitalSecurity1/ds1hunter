@@ -1,10 +1,20 @@
-# DS1 Hunter
+# DS1 Hunter - Community Edition
 
 > **"Hunt. Chain. Prove."** - by DigitalSecurity1
 
 Advanced all-in-one web application security testing platform built for penetration testers.
 
-At its core, **Hunt** is the flagship scanner: a 5-phase attack chain engine with Think Mode (adaptive deep analysis that pushes payload coverage to its maximum) and full proof-of-exploitation generation -- backed by 43 built-in attack modules covering SQLi, XSS, SSRF, SSTI, CORS, JWT, GraphQL, WebSocket, memory corruption, and more. Beyond Hunt, DS1 Hunter ships with an Active Scanner, API Security Audit, Code Review, Mobile App Pentesting, Proxy with Intruder and Repeater, Spider, and OAST testing -- all in a single install.
+At its core, **Hunt** is the flagship scanner: a 5-phase attack chain engine with Think Mode (adaptive deep analysis that pushes payload coverage to its maximum) and full proof-of-exploitation generation.
+
+DS1 Hunter ships with **43 built-in attack modules** that cover everything from vulnerability scanning to dedicated testing tools:
+
+- **Dedicated tools** - Active Scanner, API Security Audit, Code Review, Mobile App Pentesting
+- **Web vulnerabilities** - SQLi, XSS, SSRF, SSTI, CORS, JWT, GraphQL, WebSocket, XXE, BOLA, and more
+- **Advanced attacks** - HTTP Smuggling, Race Conditions, Prototype Pollution, Memory Corruption, Buffer Overflow
+- **Recon and discovery** - Spider, JS Secret Scanner, Subdomain Takeover, Git Exposure, OpenAPI Scanner
+- **Infrastructure** - Proxy with Intruder and Repeater, OAST, WAF Identifier, SSL Analyzer
+
+All in a single install. No extra tools needed.
 
 Free to download and use for security professionals and penetration testers.
 
