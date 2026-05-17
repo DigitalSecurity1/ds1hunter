@@ -2,7 +2,9 @@
 
 > **"Hunt. Chain. Prove."** - by DigitalSecurity1
 
-Advanced web application security testing platform with a 5-phase attack chain engine, Think Mode AI, and full proof-of-exploitation generation.
+Advanced all-in-one web application security testing platform built for penetration testers.
+
+At its core, **Hunt** is the flagship scanner: a 5-phase attack chain engine with Think Mode (adaptive deep analysis that pushes payload coverage to its maximum) and full proof-of-exploitation generation. Beyond Hunt, DS1 Hunter ships with an Active Scanner, API Security Audit, Code Review, Mobile App Pentesting, Proxy with Intruder and Repeater, Spider, and OAST testing -- all in a single install.
 
 Free to download and use for security professionals and penetration testers.
 
