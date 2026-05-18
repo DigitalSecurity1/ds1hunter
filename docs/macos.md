@@ -17,14 +17,14 @@
 ## Install
 
 ```bash
-sudo bash ds1hunter-v1.0.0-macos.run
+sudo bash ds1hunter-CE-v1.0.0-macos.run
 ```
 
 If macOS Gatekeeper blocks it:
 
 ```bash
-xattr -d com.apple.quarantine ds1hunter-v1.0.0-macos.run
-sudo bash ds1hunter-v1.0.0-macos.run
+xattr -d com.apple.quarantine ds1hunter-CE-v1.0.0-macos.run
+sudo bash ds1hunter-CE-v1.0.0-macos.run
 ```
 
 The installer runs 12 steps automatically:

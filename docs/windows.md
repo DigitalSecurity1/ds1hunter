@@ -18,7 +18,7 @@
 Open **PowerShell as Administrator**, then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ds1hunter-v1.0.0-windows.ps1
+powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.0-windows.ps1
 ```
 
 To open PowerShell as Administrator: press `Win + X` and choose **Windows PowerShell (Admin)** or **Terminal (Admin)**.

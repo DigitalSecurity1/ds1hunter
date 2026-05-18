@@ -16,7 +16,7 @@
 ## Install
 
 ```bash
-sudo bash ds1hunter-v1.0.0-linux.run
+sudo bash ds1hunter-CE-v1.0.0-linux.run
 ```
 
 The installer runs 12 steps automatically:
