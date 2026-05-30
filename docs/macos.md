@@ -9,90 +9,59 @@
 
 ## Requirements
 
-- 4 GB RAM minimum
-- 2 GB free disk space
-- Internet access during install (downloads Homebrew packages)
-- Administrator access
+- 4 GB RAM minimum (8 GB recommended)
+- 5 GB free disk space
+- [Homebrew](https://brew.sh) (installer will prompt if missing)
+- Internet access during install
+- Administrator (sudo) access
 
 ## Install
 
 ```bash
-sudo bash ds1hunter-CE-v1.0.0-macos.run
+sudo bash ds1hunter-CE-v1.0.2-macos.run
 ```
 
-If macOS Gatekeeper blocks it:
+The installer handles everything:
 
-```bash
-xattr -d com.apple.quarantine ds1hunter-CE-v1.0.0-macos.run
-sudo bash ds1hunter-CE-v1.0.0-macos.run
-```
+1. Installs dependencies via Homebrew (Python 3.13+, Node.js, OpenSSL)
+2. Creates a hidden system service account (`_ds1hunter`)
+3. Sets up a Python virtual environment
+4. Compiles Python bytecode for your exact Python version (fixes Python 3.14 compatibility)
+5. Installs Playwright Chromium for Active Scanner and Spider
+6. Configures `serve` for static HTTPS frontend
+7. Generates a self-signed RSA 4096 TLS certificate and trusts it in the macOS System Keychain
+8. Generates a random admin password and randomized admin URL
+9. Runs database migrations
+10. Registers and starts two launchd services
 
-The installer runs 12 steps automatically:
+At the end, credentials are displayed once. Save them before closing the terminal.
 
-1. Detects Homebrew (installs it if missing)
-2. Installs dependencies via brew (python3, node, openssl, git)
-3. Copies files to `/opt/ds1hunter`
-4. Creates the `_ds1hunter` hidden system service user
-5. Creates Python venv, installs all dependencies
-6. Installs Playwright Chromium
-7. Builds the React web UI
-8. Generates self-signed RSA 4096 TLS certificate (compatible with LibreSSL and OpenSSL)
-9. Auto-trusts the certificate in macOS System Keychain
-10. Generates random credentials
-11. Runs Django setup
-12. Creates and loads two launchd services
+## First Access
 
-## After Install
-
-| Service | URL |
-|---------|-----|
-| Web UI | https://127.0.0.1:13000 |
-| API | https://127.0.0.1:18000 |
-| CLI | `ds1hunter --help` |
-
-## Browser Certificate
-
-The certificate is auto-added to the System Keychain during install.
-
-If your browser still shows a warning:
-
-1. Open **Keychain Access**
-2. Select **System** keychain
-3. Find **ds1hunter.local**
-4. Double-click > **Trust** > **When using this certificate: Always Trust**
+Open `https://127.0.0.1:13000` in your browser (Chrome or Firefox recommended). Log in with the displayed credentials.
 
 ## Service Management
 
 ```bash
-# Start
-launchctl load /Library/LaunchDaemons/com.ds1hunter.api.plist
-launchctl load /Library/LaunchDaemons/com.ds1hunter.ui.plist
-
 # Stop
-launchctl unload /Library/LaunchDaemons/com.ds1hunter.api.plist
-launchctl unload /Library/LaunchDaemons/com.ds1hunter.ui.plist
+sudo launchctl unload /Library/LaunchDaemons/com.ds1hunter.api.plist
+sudo launchctl unload /Library/LaunchDaemons/com.ds1hunter.ui.plist
+
+# Start
+sudo launchctl load /Library/LaunchDaemons/com.ds1hunter.api.plist
+sudo launchctl load /Library/LaunchDaemons/com.ds1hunter.ui.plist
 
 # Logs
 tail -f /var/log/ds1hunter/api.log
 tail -f /var/log/ds1hunter/ui.log
 ```
 
-## CLI
+## Verify SHA256
 
 ```bash
-ds1hunter https://target.com --depth normal
-ds1hunter https://target.com --depth deep --think
-ds1hunter --help
+shasum -a 256 -c ds1hunter-CE-v1.0.2-macos.run.sha256
 ```
 
-## Uninstall
+## Note on Python Compatibility
 
-```bash
-launchctl unload /Library/LaunchDaemons/com.ds1hunter.api.plist
-launchctl unload /Library/LaunchDaemons/com.ds1hunter.ui.plist
-rm /Library/LaunchDaemons/com.ds1hunter.api.plist
-rm /Library/LaunchDaemons/com.ds1hunter.ui.plist
-sudo rm -rf /opt/ds1hunter
-sudo dscl . -delete /Users/_ds1hunter
-sudo rm /usr/local/bin/ds1hunter
-```
+v1.0.2 fixes the `bad magic number` crash that affected macOS users running Python 3.14. The installer now compiles Python bytecode using your installed Python version at install time.

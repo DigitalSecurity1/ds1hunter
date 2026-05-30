@@ -2,103 +2,72 @@
 
 ## Supported Systems
 
-- Windows 10 version 21H2 or newer
-- Windows 11
+- Windows 10 Pro (21H2+)
+- Windows 11 Pro
 - Windows Server 2022+
 
 ## Requirements
 
-- 4 GB RAM minimum
-- 2 GB free disk space
-- Internet access during install (downloads Python, Node.js)
-- Administrator account
+- 4 GB RAM minimum (8 GB recommended)
+- 5 GB free disk space
+- Internet access during install
+- Administrator privileges (Run as Administrator)
 
 ## Install
 
 Open **PowerShell as Administrator**, then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.0-windows.ps1
+powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.2-windows.ps1
 ```
 
-To open PowerShell as Administrator: press `Win + X` and choose **Windows PowerShell (Admin)** or **Terminal (Admin)**.
+The installer handles everything:
 
-The installer runs 12 steps automatically:
+1. Installs Python 3.13+ and Node.js 22 via winget (Windows Package Manager)
+2. Installs all Python dependencies in a virtual environment
+3. Compiles Python bytecode for your exact Python version
+4. Installs Playwright Chromium for Active Scanner and Spider
+5. Installs `serve` for the React frontend
+6. Generates a self-signed TLS certificate and installs it in the Windows Certificate Store
+7. Generates a random admin password and randomized admin URL
+8. Runs database migrations
+9. Registers two Windows services (`DS1HunterAPI`, `DS1HunterUI`) via NSSM (bundled, no download needed)
 
-1. Checks for winget and installs Python 3.13 + Node.js LTS
-2. Prepares `C:\ds1hunter`
-3. Creates Python venv, installs all dependencies
-4. Installs Playwright Chromium
-5. Builds the React web UI, installs serve
-6. Generates RSA 4096 TLS certificate using Windows PowerShell PKI
-7. Auto-trusts the certificate in Windows Root CA store
-8. Generates random credentials
-9. Runs Django migrations and creates admin user
-10. Adds Windows Defender exclusion for `C:\ds1hunter`
-11. Installs `ds1hunter.exe` system-wide
-12. Installs DS1HunterAPI and DS1HunterUI as auto-start Windows Services via NSSM
+At the end, credentials are displayed once. Save them before closing PowerShell.
 
-## After Install
+## First Access
 
-| Service | URL |
-|---------|-----|
-| Web UI | https://127.0.0.1:13000 |
-| API | https://127.0.0.1:18000 |
-| CLI | `ds1hunter --help` (any terminal) |
-
-## Browser Certificate
-
-The certificate is auto-trusted in Windows Root CA during install.
-
-If your browser still shows a warning, run this in PowerShell (as Administrator):
-
-```powershell
-certmgr.msc
-```
-
-Navigate to **Trusted Root Certification Authorities > Certificates** and verify **DS1 Hunter TLS** is listed.
+Open `https://127.0.0.1:13000` in your browser. Accept the certificate warning (or use Edge which trusts the Windows Certificate Store automatically), then log in with the displayed credentials.
 
 ## Service Management
 
-Run these in **PowerShell as Administrator**:
-
 ```powershell
-# Start
-Start-Service DS1HunterAPI, DS1HunterUI
+# Status
+Get-Service DS1HunterAPI, DS1HunterUI
 
 # Stop
 Stop-Service DS1HunterAPI, DS1HunterUI
 
+# Start
+Start-Service DS1HunterAPI, DS1HunterUI
+
 # Restart
 Restart-Service DS1HunterAPI, DS1HunterUI
 
-# Status
-Get-Service DS1HunterAPI, DS1HunterUI
-
 # Logs
-Get-Content C:\ds1hunter\logs\api.log -Tail 50
-Get-Content C:\ds1hunter\logs\api-error.log -Tail 50
+Get-Content C:\ds1hunter\logs\api.log -Tail 50 -Wait
+Get-Content C:\ds1hunter\logs\ui.log  -Tail 50 -Wait
 ```
 
-You can also manage services from **Services** (`services.msc`).
-
-## CLI
+## Verify SHA256
 
 ```powershell
-ds1hunter https://target.com --depth normal
-ds1hunter https://target.com --depth deep --think
-ds1hunter --help
+Get-FileHash ds1hunter-CE-v1.0.2-windows.ps1 -Algorithm SHA256
+# Compare with contents of ds1hunter-CE-v1.0.2-windows.ps1.sha256
 ```
 
-## Uninstall
+## Troubleshooting
 
-Run in **PowerShell as Administrator**:
+**winget not available:** The installer falls back to the winget community source automatically. If winget is completely unavailable, install Python 3.13 and Node.js 22 manually from their official websites, then re-run the installer.
 
-```powershell
-Stop-Service DS1HunterAPI, DS1HunterUI -Force -ErrorAction SilentlyContinue
-& "C:\ds1hunter\bin\nssm.exe" remove DS1HunterAPI confirm
-& "C:\ds1hunter\bin\nssm.exe" remove DS1HunterUI  confirm
-Remove-Item -Path "C:\ds1hunter" -Recurse -Force
-Remove-Item -Path "C:\Windows\System32\ds1hunter.exe" -Force -ErrorAction SilentlyContinue
-Remove-MpPreference -ExclusionPath "C:\ds1hunter" -ErrorAction SilentlyContinue
-```
+**Antivirus blocking NSSM:** NSSM (the service manager) may be flagged by some antivirus products. Add `C:\ds1hunter\bin\nssm.exe` to your AV exclusion list.
