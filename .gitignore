@@ -1,3 +1,47 @@
-# Nothing to ignore -- this repo contains only docs and release assets are attached via GitHub Releases
-*.DS_Store
+# This repo contains only: docs/, README.md, CHANGELOG.md, install-*.sh/ps1
+# All application source code is proprietary and must never be committed here.
+
+# Explicitly block all source directories
+core/
+web/
+frontend/
+cli/
+deploy/
+data/
+assets/
+bin/
+book_parts/
+windows/
+dist/
+github-release/
+
+# Block all source file types
+*.py
+*.js
+*.jsx
+*.ts
+*.tsx
+*.css
+*.html
+*.yaml
+*.yml
+*.toml
+*.json
+*.txt
+*.csv
+*.md
+!README.md
+!CHANGELOG.md
+!docs/*.md
+
+# OS / IDE
+.DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+.env
+*.key
+*.pem
