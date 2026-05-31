@@ -145,40 +145,114 @@ if ($winVer.Major -lt 10) { Write-Die "Windows 10 or newer is required." }
 Write-Step "Step 1 / 12  Checking system dependencies"
 # ══════════════════════════════════════════════════════════════════════════════
 
-# winget check
+# ── Dependency installer helpers ───────────────────────────────────────────────
+
+function Install-ViaWinget {
+    param([string]$Id, [string]$Name)
+    # Try community source first, then msstore, then no source.
+    # Omitting --source works on all Windows editions including Home.
+    $attempts = @(
+        @("--id", $Id, "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements"),
+        @("--id", $Id, "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements", "--source", "msstore")
+    )
+    foreach ($args in $attempts) {
+        try {
+            $result = & winget install @args 2>&1
+            if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1978335189) {
+                # 0 = success, -1978335189 = already installed
+                return $true
+            }
+        } catch { }
+    }
+    return $false
+}
+
+function Install-PythonDirect {
+    Write-Info "Downloading Python 3.13 installer from python.org..."
+    $pyUrl  = "https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe"
+    $pyTmp  = "$env:TEMP\python-313-setup.exe"
+    try {
+        Invoke-WebRequest -Uri $pyUrl -OutFile $pyTmp -UseBasicParsing
+        Write-Info "Running Python installer (silent)..."
+        Start-Process -FilePath $pyTmp -ArgumentList @(
+            "/quiet", "InstallAllUsers=1", "PrependPath=1",
+            "Include_test=0", "Include_doc=0"
+        ) -Wait
+        Remove-Item $pyTmp -ErrorAction SilentlyContinue
+        Refresh-Path
+        return $true
+    } catch {
+        Write-Warn "Direct Python download failed: $_"
+        return $false
+    }
+}
+
+function Install-NodeDirect {
+    Write-Info "Downloading Node.js LTS installer from nodejs.org..."
+    $nodeUrl = "https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi"
+    $nodeTmp = "$env:TEMP\nodejs-setup.msi"
+    try {
+        Invoke-WebRequest -Uri $nodeUrl -OutFile $nodeTmp -UseBasicParsing
+        Write-Info "Running Node.js installer (silent)..."
+        Start-Process -FilePath "msiexec.exe" -ArgumentList @(
+            "/i", $nodeTmp, "/quiet", "/norestart", "ADDLOCAL=ALL"
+        ) -Wait
+        Remove-Item $nodeTmp -ErrorAction SilentlyContinue
+        Refresh-Path
+        return $true
+    } catch {
+        Write-Warn "Direct Node.js download failed: $_"
+        return $false
+    }
+}
+
+# ── Check / install dependencies ───────────────────────────────────────────────
+
 $hasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-if (-not $hasWinget) {
-    Write-Warn "winget not found. Install App Installer from the Microsoft Store,"
-    Write-Warn "or install Python 3.13 and Node.js 20 manually from python.org / nodejs.org"
-    Write-Warn "then re-run this installer."
-    Read-Host "Press Enter when Python and Node.js are installed, or Ctrl+C to exit"
-} else {
+if ($hasWinget) {
     Write-Ok "winget available"
+} else {
+    Write-Warn "winget not found - will use direct downloads from python.org and nodejs.org"
 }
 
 # Python
 $PYTHON = Find-Python
 if (-not $PYTHON) {
+    $installed = $false
     if ($hasWinget) {
         Write-Info "Installing Python 3.13 via winget..."
-        winget install --id Python.Python.3.13 -e --source winget --silent --accept-package-agreements --accept-source-agreements
+        $installed = Install-ViaWinget "Python.Python.3.13" "Python 3.13"
+        Refresh-Path; $PYTHON = Find-Python
+    }
+    if (-not $PYTHON) {
+        Write-Info "Trying direct download from python.org..."
+        $installed = Install-PythonDirect
         $PYTHON = Find-Python
     }
-    if (-not $PYTHON) { Write-Die "Python 3.13+ not found. Install from https://www.python.org/downloads/windows/" }
+    if (-not $PYTHON) {
+        Write-Die "Python 3.13+ not found and automatic install failed.`nInstall manually from https://www.python.org/downloads/windows/ then re-run."
+    }
 }
 $pyVer = & $PYTHON --version 2>&1
 Write-Ok "$pyVer at $PYTHON"
 
-# Node
+# Node.js
 $NODE = Find-Node
 if (-not $NODE) {
+    $installed = $false
     if ($hasWinget) {
-        Write-Info "Installing Node.js via winget..."
-        winget install --id OpenJS.NodeJS.LTS -e --source winget --silent --accept-package-agreements --accept-source-agreements
-        Refresh-Path
+        Write-Info "Installing Node.js LTS via winget..."
+        $installed = Install-ViaWinget "OpenJS.NodeJS.LTS" "Node.js LTS"
+        Refresh-Path; $NODE = Find-Node
+    }
+    if (-not $NODE) {
+        Write-Info "Trying direct download from nodejs.org..."
+        $installed = Install-NodeDirect
         $NODE = Find-Node
     }
-    if (-not $NODE) { Write-Die "Node.js 16+ not found. Install from https://nodejs.org/" }
+    if (-not $NODE) {
+        Write-Die "Node.js not found and automatic install failed.`nInstall manually from https://nodejs.org/ then re-run."
+    }
 }
 $nodeVer = & $NODE --version 2>&1
 Write-Ok "Node.js $nodeVer at $NODE"
