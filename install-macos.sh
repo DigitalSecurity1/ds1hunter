@@ -23,6 +23,7 @@ LOG_DIR="/var/log/ds1hunter"
 PLIST_API="com.ds1hunter.api"
 PLIST_UI="com.ds1hunter.ui"
 LAUNCHD_DIR="/Library/LaunchDaemons"
+MACOS_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
 
 # ── Colors ─────────────────────────────────────────────────────────────────
 BOLD="\033[1m"
@@ -44,6 +45,22 @@ step() {
 }
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# launchctl wrappers: use bootstrap/bootout on Sequoia 15+, load/unload below
+lctl_load() {
+  if (( MACOS_MAJOR >= 15 )); then
+    launchctl bootstrap system "$1" 2>/dev/null || true
+  else
+    launchctl load "$1" 2>/dev/null || true
+  fi
+}
+lctl_unload() {
+  if (( MACOS_MAJOR >= 15 )); then
+    launchctl bootout system "$1" 2>/dev/null || true
+  else
+    launchctl unload "$1" 2>/dev/null || true
+  fi
+}
 
 # ── Banner ─────────────────────────────────────────────────────────────────
 echo -e "${CYAN}${BOLD}"
@@ -148,8 +165,8 @@ if [[ -d "$INSTALL_DIR" ]]; then
   read -r CONFIRM
   [[ "$CONFIRM" =~ ^[yY]$ ]] || die "Installation cancelled."
   # Unload running services before removing
-  launchctl unload "$LAUNCHD_DIR/$PLIST_API.plist" 2>/dev/null || true
-  launchctl unload "$LAUNCHD_DIR/$PLIST_UI.plist"  2>/dev/null || true
+  lctl_unload "$LAUNCHD_DIR/$PLIST_API.plist"
+  lctl_unload "$LAUNCHD_DIR/$PLIST_UI.plist"
   rm -rf "$INSTALL_DIR"
   ok "Old installation removed"
 fi
@@ -576,8 +593,8 @@ for PORT in $API_PORT $UI_PORT; do
 done
 
 # Load and start services
-launchctl load "$LAUNCHD_DIR/$PLIST_API.plist" 2>/dev/null || true
-launchctl load "$LAUNCHD_DIR/$PLIST_UI.plist"  2>/dev/null || true
+lctl_load "$LAUNCHD_DIR/$PLIST_API.plist"
+lctl_load "$LAUNCHD_DIR/$PLIST_UI.plist"
 
 sleep 3
 
@@ -606,9 +623,15 @@ _TITLE="DS1 Hunter - Community Edition v${VERSION} installed successfully!"
 _WEB="Web UI  :  https://127.0.0.1:${UI_PORT}"
 _API="API     :  https://127.0.0.1:${API_PORT}"
 _PW="Password :  ${ADMIN_PASS}"
-_LOAD_API="launchctl load ${LAUNCHD_DIR}/${PLIST_API}.plist"
-_LOAD_UI="launchctl load ${LAUNCHD_DIR}/${PLIST_UI}.plist"
-_UNLOAD="launchctl unload ${LAUNCHD_DIR}/com.ds1hunter.*.plist"
+if (( MACOS_MAJOR >= 15 )); then
+  _LOAD_API="launchctl bootstrap system ${LAUNCHD_DIR}/${PLIST_API}.plist"
+  _LOAD_UI="launchctl bootstrap system ${LAUNCHD_DIR}/${PLIST_UI}.plist"
+  _UNLOAD="launchctl bootout system ${LAUNCHD_DIR}/com.ds1hunter.*.plist"
+else
+  _LOAD_API="launchctl load ${LAUNCHD_DIR}/${PLIST_API}.plist"
+  _LOAD_UI="launchctl load ${LAUNCHD_DIR}/${PLIST_UI}.plist"
+  _UNLOAD="launchctl unload ${LAUNCHD_DIR}/com.ds1hunter.*.plist"
+fi
 _LOG_API="Logs    : tail -f ${LOG_DIR}/api.log"
 _LOG_UI="             tail -f ${LOG_DIR}/ui.log"
 
