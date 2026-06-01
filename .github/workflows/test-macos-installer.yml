@@ -1,0 +1,95 @@
+name: Test macOS Installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to test (e.g. v1.0.2)"
+        required: true
+        default: "v1.0.2"
+
+jobs:
+  test-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-13     # Ventura  - Intel
+          - macos-14     # Sonoma   - Apple Silicon (M1)
+          - macos-15     # Sequoia  - Apple Silicon (M2)
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download installer from release
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          curl -fsSL \
+            "https://github.com/${{ github.repository }}/releases/download/${TAG}/ds1hunter-CE-${TAG}-macos.run" \
+            -o installer.run
+          curl -fsSL \
+            "https://github.com/${{ github.repository }}/releases/download/${TAG}/ds1hunter-CE-${TAG}-macos.run.sha256" \
+            -o installer.run.sha256
+
+      - name: Verify SHA-256 checksum
+        run: |
+          # GitHub-hosted runners have shasum, not sha256sum
+          expected=$(awk '{print $1}' installer.run.sha256)
+          actual=$(shasum -a 256 installer.run | awk '{print $1}')
+          echo "Expected : $expected"
+          echo "Actual   : $actual"
+          if [ "$expected" != "$actual" ]; then
+            echo "CHECKSUM MISMATCH" && exit 1
+          fi
+          echo "Checksum OK"
+
+      - name: Run installer
+        run: |
+          chmod +x installer.run
+          # Run non-interactively; installer must exit 0 on success
+          bash installer.run --non-interactive 2>&1 | tee install.log
+          echo "Exit code: $?"
+
+      - name: Smoke test - service responds
+        run: |
+          # Give the service up to 60 s to start
+          for i in $(seq 1 12); do
+            if curl -sf http://127.0.0.1:13000/api/health > /dev/null 2>&1; then
+              echo "Service is up"
+              exit 0
+            fi
+            echo "Waiting... ($i/12)"
+            sleep 5
+          done
+          echo "Service did not respond in time"
+          cat install.log
+          exit 1
+
+      - name: Smoke test - login endpoint reachable
+        run: |
+          status=$(curl -o /dev/null -s -w "%{http_code}" http://127.0.0.1:13000/)
+          echo "HTTP status: $status"
+          if [ "$status" != "200" ] && [ "$status" != "302" ]; then
+            echo "Unexpected status $status"
+            exit 1
+          fi
+
+      - name: Upload install log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-log-${{ matrix.os }}
+          path: install.log
+          retention-days: 7
