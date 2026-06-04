@@ -98,15 +98,20 @@ fi
 step "Step 1 / 12  Checking system dependencies"
 # ══════════════════════════════════════════════════════════════════════════
 
-# Homebrew
+# Homebrew — must not be installed as root; detect actual user via $SUDO_USER
 if ! command -v brew &>/dev/null; then
-  warn "Homebrew not found. Installing..."
-  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || \
-    die "Homebrew installation failed. Install manually from https://brew.sh"
-  # Reload brew path
+  REAL_USER="${SUDO_USER:-}"
+  if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+    die "Homebrew is not installed and cannot be auto-installed when running directly as root.\n\n  1. Exit this installer\n  2. Install Homebrew as your normal user:\n       /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\n  3. Re-run: sudo bash install-macos.sh"
+  fi
+  warn "Homebrew not found — installing as '$REAL_USER'..."
+  NONINTERACTIVE=1 sudo -u "$REAL_USER" \
+    HOME="$(eval echo "~$REAL_USER")" \
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || \
+    die "Homebrew installation failed.\n  Install manually: https://brew.sh — then re-run this installer."
   [[ -d "/opt/homebrew/bin" ]] && export PATH="/opt/homebrew/bin:$PATH"
   [[ -d "/usr/local/bin" ]]    && export PATH="/usr/local/bin:$PATH"
-  BREW_PREFIX="$(brew --prefix)"
+  BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
   ok "Homebrew installed"
 else
   BREW_PREFIX="$(brew --prefix)"
@@ -291,8 +296,12 @@ step "Step 6 / 12  Building React frontend"
 # ══════════════════════════════════════════════════════════════════════════
 
 info "React frontend pre-built — installing serve for static HTTPS serving..."
-npm install -g serve -q
-SERVE_BIN=$(command -v serve 2>/dev/null || echo "$BREW_PREFIX/bin/serve")
+npm install -g serve@14 -q
+# npm global bin dir can differ from Homebrew prefix when running as root
+NPM_GLOBAL_BIN="$(npm config get prefix)/bin"
+SERVE_BIN="$(command -v serve 2>/dev/null || echo "$NPM_GLOBAL_BIN/serve")"
+[[ ! -x "$SERVE_BIN" ]] && SERVE_BIN="$BREW_PREFIX/bin/serve"
+[[ ! -x "$SERVE_BIN" ]] && die "serve binary not found after npm install. Run: npm install -g serve@14"
 ok "serve ready at $SERVE_BIN"
 
 cd "$SRC_DIR"
@@ -328,6 +337,7 @@ subjectAltName   = @alt_names
 DNS.1 = localhost
 DNS.2 = ds1hunter.local
 IP.1  = 127.0.0.1
+IP.2  = ::1
 CNFEOF
 
   openssl req -x509 -nodes \
@@ -362,15 +372,17 @@ step "Step 8 / 12  Generating secure credentials"
 # ══════════════════════════════════════════════════════════════════════════
 
 SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+# Alphanumeric only: no special chars that break shell interpolation or are
+# hard to read in a terminal (no !, @, #, %, ', \, $, etc.)
 ADMIN_PASS=$(python3 -c "
 import secrets, string
-chars = string.ascii_letters + string.digits + '!@#%^&*'
-print(''.join(secrets.choice(chars) for _ in range(22)))
+chars = string.ascii_letters + string.digits
+print(''.join(secrets.choice(chars) for _ in range(24)))
 ")
 ADMIN_URL_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(6))")
 ADMIN_URL="ds1-ops-${ADMIN_URL_TOKEN}/"
 ok "SECRET_KEY generated (50 chars)"
-ok "Admin password generated (22 chars)"
+ok "Admin password generated (24 chars, alphanumeric)"
 ok "Admin URL randomized"
 
 
@@ -458,18 +470,23 @@ $MANAGE collectstatic --no-input -v 0
 ok "Static files collected"
 
 info "Creating admin user..."
+# Pass password via environment variable to avoid shell-quoting issues
+export DS1_ADMIN_PASS="$ADMIN_PASS"
 $MANAGE shell -c "
+import os
 from django.contrib.auth import get_user_model
 User = get_user_model()
+pwd = os.environ['DS1_ADMIN_PASS']
 if User.objects.filter(username='admin').exists():
     u = User.objects.get(username='admin')
-    u.set_password('${ADMIN_PASS}')
+    u.set_password(pwd)
     u.save()
     print('Admin password reset.')
 else:
-    User.objects.create_superuser('admin', 'admin@ds1hunter.local', '${ADMIN_PASS}')
+    User.objects.create_superuser('admin', 'admin@ds1hunter.local', pwd)
     print('Admin user created.')
 "
+unset DS1_ADMIN_PASS
 ok "Admin user ready"
 
 cd "$SRC_DIR"
@@ -605,6 +622,26 @@ launchctl list | grep -q "$PLIST_UI"  && UI_OK=true
 
 $API_OK && ok "ds1hunter-api service started" || warn "ds1hunter-api did not start -- check: tail -f $LOG_DIR/api-error.log"
 $UI_OK  && ok "ds1hunter-ui  service started" || warn "ds1hunter-ui  did not start -- check: tail -f $LOG_DIR/ui-error.log"
+
+
+# Write credentials to a file so the user can copy-paste without misreading
+CRED_FILE="$INSTALL_DIR/credentials.txt"
+cat > "$CRED_FILE" << CRED_EOF
+DS1 Hunter Community Edition v${VERSION}
+Generated: $(date '+%Y-%m-%d %H:%M:%S')
+--------------------------------------------------
+Web UI   : https://127.0.0.1:${UI_PORT}
+API      : https://127.0.0.1:${API_PORT}
+
+Username : admin
+Password : ${ADMIN_PASS}
+--------------------------------------------------
+Save these credentials to a password manager,
+then delete this file:  rm ${CRED_FILE}
+CRED_EOF
+chmod 600 "$CRED_FILE"
+chown root "$CRED_FILE"
+ok "Credentials saved to $CRED_FILE (open to copy-paste)"
 
 
 # ══════════════════════════════════════════════════════════════════════════
