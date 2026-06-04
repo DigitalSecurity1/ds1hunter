@@ -418,8 +418,11 @@ if ((Test-Path $CERT) -and (Test-Path $KEY)) {
 } else {
     Write-Info "Generating self-signed RSA 4096 certificate (825 days)..."
 
+    # TextExtension adds proper IP SANs for 127.0.0.1 and ::1.
+    # Without IP SANs, Chrome/Edge rejects the cert when accessed via IP address.
     $certParams = @{
         DnsName           = @("localhost", "ds1hunter.local")
+        TextExtension     = @("2.5.29.17={text}DNS=localhost&DNS=ds1hunter.local&IPAddress=127.0.0.1&IPAddress=::1")
         KeyAlgorithm      = "RSA"
         KeyLength         = 4096
         CertStoreLocation = "Cert:\LocalMachine\My"
@@ -484,8 +487,9 @@ Write-Step "Step 7 / 12  Generating secure credentials"
 $SECRET_KEY = & $VENV_PYTHON -c "import secrets; print(secrets.token_urlsafe(50))"
 $ADMIN_PASS = & $VENV_PYTHON -c @"
 import secrets, string
-chars = string.ascii_letters + string.digits + '!@#%^&*'
-print(''.join(secrets.choice(chars) for _ in range(22)))
+# Letters + digits only: no special chars that are hard to read or type
+chars = string.ascii_letters + string.digits
+print(''.join(secrets.choice(chars) for _ in range(24)))
 "@
 $ADMIN_URL_TOKEN = & $VENV_PYTHON -c "import secrets; print(secrets.token_hex(6))"
 $ADMIN_URL       = "ds1-ops-$ADMIN_URL_TOKEN/"
@@ -764,4 +768,22 @@ Write-Host ("  ║  {0,-61}║" -f "  API log : Get-Content $LOG_DIR\api.log") -
 Write-Host ("  ║  {0,-61}║" -f "  UI log  : Get-Content $LOG_DIR\ui.log") -ForegroundColor Green
 Write-Host "  ║                                                               ║" -ForegroundColor Green
 Write-Host "  ╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host ""
+
+# Write credentials to file so the user can copy-paste without misreading the terminal
+$credFile = "$INSTALL_DIR\credentials.txt"
+@"
+DS1 Hunter - Community Edition v$VERSION
+Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+----------------------------------------
+Web UI   : https://127.0.0.1:$UI_PORT
+API      : https://127.0.0.1:$API_PORT
+
+Username : admin
+Password : $ADMIN_PASS
+----------------------------------------
+Delete this file after saving credentials to a password manager.
+"@ | Set-Content -Path $credFile -Encoding UTF8
+Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
+Write-Host "  Open that file to copy your password - then delete it." -ForegroundColor Yellow
 Write-Host ""
