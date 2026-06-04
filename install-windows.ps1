@@ -15,6 +15,16 @@ Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"   # suppress progress bars for Invoke-WebRequest
 
+# Force TLS 1.2+ for ALL web requests.
+# Windows 10 Home PowerShell defaults to TLS 1.0 which python.org / nodejs.org reject.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.SecurityProtocolType]::Tls13 -bor [Net.SecurityProtocolType]::Tls12
+} catch {
+    # TLS 1.3 not available on this Windows build — TLS 1.2 is sufficient
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 $INSTALL_DIR = "C:\ds1hunter"
 $API_PORT    = 18000
@@ -169,7 +179,7 @@ function Install-ViaWinget {
 
 function Install-PythonDirect {
     Write-Info "Downloading Python 3.13 installer from python.org..."
-    $pyUrl  = "https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe"
+    $pyUrl  = "https://www.python.org/ftp/python/3.13.3/python-3.13.3-amd64.exe"
     $pyTmp  = "$env:TEMP\python-313-setup.exe"
     try {
         Invoke-WebRequest -Uri $pyUrl -OutFile $pyTmp -UseBasicParsing
