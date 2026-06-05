@@ -770,20 +770,3 @@ Write-Host "  ║                                                               
 Write-Host "  ╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
 
-# Write credentials to file so the user can copy-paste without misreading the terminal
-$credFile = "$INSTALL_DIR\credentials.txt"
-@"
-DS1 Hunter - Community Edition v$VERSION
-Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-----------------------------------------
-Web UI   : https://127.0.0.1:$UI_PORT
-API      : https://127.0.0.1:$API_PORT
-
-Username : admin
-Password : $ADMIN_PASS
-----------------------------------------
-Delete this file after saving credentials to a password manager.
-"@ | Set-Content -Path $credFile -Encoding UTF8
-Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
-Write-Host "  Open that file to copy your password - then delete it." -ForegroundColor Yellow
-Write-Host ""
