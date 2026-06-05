@@ -639,9 +639,13 @@ Password : ${ADMIN_PASS}
 Save these credentials to a password manager,
 then delete this file:  rm ${CRED_FILE}
 CRED_EOF
-chmod 600 "$CRED_FILE"
-chown root "$CRED_FILE"
-ok "Credentials saved to $CRED_FILE (open to copy-paste)"
+# Make the file readable by the actual user who ran sudo, not just root.
+# Without this the user must sudo cat to read their own password.
+REAL_USER="${SUDO_USER:-root}"
+chown "$REAL_USER" "$CRED_FILE"
+chmod 640 "$CRED_FILE"
+ok "Credentials saved to $CRED_FILE"
+ok "Open it with:  open $CRED_FILE"
 
 
 # ══════════════════════════════════════════════════════════════════════════
