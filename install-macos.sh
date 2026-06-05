@@ -624,28 +624,6 @@ $API_OK && ok "ds1hunter-api service started" || warn "ds1hunter-api did not sta
 $UI_OK  && ok "ds1hunter-ui  service started" || warn "ds1hunter-ui  did not start -- check: tail -f $LOG_DIR/ui-error.log"
 
 
-# Write credentials to a file so the user can copy-paste without misreading
-CRED_FILE="$INSTALL_DIR/credentials.txt"
-cat > "$CRED_FILE" << CRED_EOF
-DS1 Hunter Community Edition v${VERSION}
-Generated: $(date '+%Y-%m-%d %H:%M:%S')
---------------------------------------------------
-Web UI   : https://127.0.0.1:${UI_PORT}
-API      : https://127.0.0.1:${API_PORT}
-
-Username : admin
-Password : ${ADMIN_PASS}
---------------------------------------------------
-Save these credentials to a password manager,
-then delete this file:  rm ${CRED_FILE}
-CRED_EOF
-# Make the file readable by the actual user who ran sudo, not just root.
-# Without this the user must sudo cat to read their own password.
-REAL_USER="${SUDO_USER:-root}"
-chown "$REAL_USER" "$CRED_FILE"
-chmod 640 "$CRED_FILE"
-ok "Credentials saved to $CRED_FILE"
-ok "Open it with:  open $CRED_FILE"
 
 
 # ══════════════════════════════════════════════════════════════════════════
