@@ -29,7 +29,7 @@ try {
 $INSTALL_DIR = "C:\ds1hunter"
 $API_PORT    = 18000
 $UI_PORT     = 13000
-$VERSION     = "1.0.2"
+$VERSION     = "1.0.3"
 $CERT_DIR    = "$INSTALL_DIR\certs"
 $CERT        = "$CERT_DIR\ds1hunter.crt"
 $KEY         = "$CERT_DIR\ds1hunter.key"
