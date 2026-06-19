@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DS1 Hunter - Windows Release Builder
-# Produces: dist/ds1hunter-v1.0.2-windows.ps1
+# Produces: dist/ds1hunter-CE-v1.0.4-windows.ps1
 #
 # Run this on Linux or macOS to build the Windows distribution.
 # Python 3.13 .pyc bytecode is platform-neutral (works on Linux/macOS/Windows).
@@ -10,10 +10,40 @@
 #   Frontend -> minified React bundle (no source maps, no src/)
 #   NSSM     -> bundled service manager binary (no runtime download needed)
 #   Package  -> self-extracting PowerShell script (base64 ZIP embedded in .ps1)
+#
+# ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
+#                     · 8 false-positive fixes across LDAP injection,
+#                       CORS, integer overflow, S3 403, CSS injection,
+#                       public subdomain filtering, Verifier chain (2
+#                       signals required), accuracy scorer calibrated
+#                     · OOB VPS: HTTP :8089 + DNS :53 with poll API
+#                     · No schema changes; migrate runs in zero time
+#
+# v1.0.3  2026-06-08  Knowledge base overhaul (core/knowledge.py):
+#                     · 80 vuln types (was 53) — 27 new types added: csrf,
+#                       bfla, mfa_bypass, saml_injection, ldap_injection,
+#                       padding_oracle, xpath_injection, crlf_injection,
+#                       websocket_injection, second_order_sqli,
+#                       session_fixation, weak_session_token, ssl_tls_weak,
+#                       file_upload_unrestricted, subdomain_takeover,
+#                       prompt_injection, llm_data_exfiltration, bola,
+#                       api_key_exposure, sensitive_data_exposure,
+#                       html_injection, default_credentials,
+#                       debug_mode_enabled, directory_listing,
+#                       sensitive_file_exposure, weak_password_policy
+#                     · exploit_poc added to every KB entry (curl/tool cmds
+#                       with {url}, {param}, {payload}, {token}, {host})
+#                     · fix_code added to every KB entry (language-annotated
+#                       before/after snippets)
+#                     · generate_poc() function: substitutes placeholders
+#                       with actual finding data at runtime
+#                     · enrich_findings_knowledge() now attaches
+#                       exploit_poc and fix_code to every finding
 
 set -euo pipefail
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(mktemp -d /tmp/ds1hunter-win-build-XXXXXX)"
 PAYLOAD="$BUILD_DIR/ds1hunter-${VERSION}"
@@ -181,13 +211,13 @@ printf '\xef\xbb\xbf' > "$OUTPUT"
 # Write the PowerShell SFX header
 cat >> "$OUTPUT" << 'SFXEOF'
 # ╔════════════════════════════════════════════════════════════╗
-# ║   DS1 Hunter v1.0.2 - Windows Self-Extracting Installer    ║
+# ║   DS1 Hunter v1.0.4 - Windows Self-Extracting Installer    ║
 # ║                  by DigitalSecurity1                       ║
 # ║              "Hunt. Chain. Prove."                         ║
 # ╚════════════════════════════════════════════════════════════╝
 #
 # Usage (PowerShell as Administrator):
-#   powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.2-windows.ps1
+#   powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.4-windows.ps1
 #
 # Tested: Windows 10 21H2+, Windows 11, Windows Server 2022+
 
@@ -205,7 +235,7 @@ if (-not $isAdmin) {
 
 Write-Host ""
 Write-Host "  ╔═══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║     DS1 HUNTER  Community Edition v1.0.2             ║" -ForegroundColor Cyan
+Write-Host "  ║     DS1 HUNTER  Community Edition v1.0.4              ║" -ForegroundColor Cyan
 Write-Host "  ║          `"Hunt. Chain. Prove.`"                        ║" -ForegroundColor Cyan
 Write-Host "  ║               by DigitalSecurity1                     ║" -ForegroundColor Cyan
 Write-Host "  ╚═══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
@@ -285,7 +315,7 @@ printf "  ║   SHA256 : %-51s║\n" "${SHA256:0:48}..."
 echo "  ║                                                             ║"
 echo "  ║   Users download and run (as Administrator):               ║"
 echo "  ║     powershell -ExecutionPolicy Bypass \                   ║"
-echo "  ║       -File ds1hunter-CE-v1.0.2-windows.ps1               ║"
+echo "  ║       -File ds1hunter-CE-v1.0.4-windows.ps1               ║"
 echo "  ║                                                             ║"
 echo "  ║   Protection layers:                                        ║"
 echo "  ║     Python   -> .pyc bytecode (Python 3.13, no decompiler) ║"

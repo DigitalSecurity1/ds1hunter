@@ -1,15 +1,46 @@
 #!/usr/bin/env bash
 # DS1 Hunter - Release Builder
-# Produces: dist/ds1hunter-CE-v1.0.2-linux.run
+# Produces: dist/ds1hunter-CE-v1.0.4-linux.run
 #
 # Protection stack:
 #   Python  -> compiled to optimized .pyc (Python 3.13 bytecode, no public decompiler)
 #   Frontend -> minified React bundle (no source maps, no src/)
 #   Package  -> self-extracting .run (bash header + base64-encoded tarball)
+#
+# ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
+#                     · 8 false-positive fixes across LDAP injection,
+#                       CORS, integer overflow, S3 403, CSS injection,
+#                       public subdomain filtering, Verifier chain,
+#                       accuracy scorer threshold calibration
+#                     · OOB VPS: HTTP :8089 + DNS :53 callback server
+#                       with poll API; DS1 Hunter polls VPS before cache
+#                     · No schema changes; migrate runs in zero time
+#
+# v1.0.3  2026-06-08  Knowledge base overhaul (core/knowledge.py):
+#                     · 80 vuln types (was 53) — 27 new types added: csrf,
+#                       bfla, mfa_bypass, saml_injection, ldap_injection,
+#                       padding_oracle, xpath_injection, crlf_injection,
+#                       websocket_injection, second_order_sqli,
+#                       session_fixation, weak_session_token, ssl_tls_weak,
+#                       file_upload_unrestricted, subdomain_takeover,
+#                       prompt_injection, llm_data_exfiltration, bola,
+#                       api_key_exposure, sensitive_data_exposure,
+#                       html_injection, default_credentials,
+#                       debug_mode_enabled, directory_listing,
+#                       sensitive_file_exposure, weak_password_policy
+#                     · exploit_poc added to every KB entry (curl/tool cmds
+#                       with {url}, {param}, {payload}, {token}, {host})
+#                     · fix_code added to every KB entry (language-annotated
+#                       before/after snippets)
+#                     · generate_poc() function: substitutes placeholders
+#                       with actual finding data at runtime
+#                     · enrich_findings_knowledge() now attaches
+#                       exploit_poc and fix_code to every finding
 
 set -euo pipefail
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(mktemp -d /tmp/ds1hunter-build-XXXXXX)"
 PAYLOAD="$BUILD_DIR/ds1hunter-${VERSION}"
@@ -151,12 +182,12 @@ info "Building self-extracting .run..."
 cat > "$OUTPUT" << 'SFXEOF'
 #!/usr/bin/env bash
 # +=========================================================+
-# |   DS1 Hunter - Community Edition v1.0.2                 |
+# |   DS1 Hunter - Community Edition v1.0.4                 |
 # |   Linux Self-Extracting Installer                        |
 # |   by DigitalSecurity1                                    |
 # +=========================================================+
 #
-# Usage: sudo bash ds1hunter-CE-v1.0.2-linux.run
+# Usage: sudo bash ds1hunter-CE-v1.0.4-linux.run
 # Tested: Kali Linux 2024+, Debian 12, Ubuntu 22.04/24.04
 
 set -euo pipefail
@@ -171,7 +202,7 @@ RESET="\033[0m"
 echo -e "${CYAN}${BOLD}"
 echo "  +=========================================================+"
 echo "  |                                                         |"
-echo "  |      DS1 HUNTER  Community Edition v1.0.2               |"
+echo "  |      DS1 HUNTER  Community Edition v1.0.4               |"
 echo "  |         \"Hunt. Chain. Prove.\"                           |"
 echo "  |              by DigitalSecurity1                        |"
 echo "  |                                                         |"
@@ -239,7 +270,7 @@ printf "  ║   Size   : %-51s║\n" "$FINAL_SIZE"
 printf "  ║   SHA256 : %-51s║\n" "${SHA256:0:48}..."
 echo "  ║                                                             ║"
 echo "  ║   Users download and run:                                   ║"
-echo "  ║     sudo bash ds1hunter-CE-v1.0.2-linux.run                ║"
+echo "  ║     sudo bash ds1hunter-CE-v1.0.4-linux.run                ║"
 echo "  ║                                                             ║"
 echo "  ║   Protection layers:                                        ║"
 echo "  ║     Python  -> .pyc bytecode (Python 3.13, no decompiler)  ║"

@@ -3246,9 +3246,12 @@ class BusinessLogicEngine:
             "page", "limit", "offset", "count", "order_id", "product_id",
             "balance", "age", "year", "size",
         ]
+        # Only match specific overflow/range error strings — "integer" and "numeric" alone
+        # are too broad and appear in normal page content (blog posts, JS source, etc.)
         _INT_ERROR_RE = re.compile(
-            r"overflow|out of range|integer|value too large|numeric|"
-            r"exceeds maximum|invalid value|constraint|not a number|NaN",
+            r"overflow|out of range|value too large|exceeds maximum|"
+            r"integer overflow|arithmetic overflow|numeric overflow|"
+            r"constraint violation|value must be between",
             re.I,
         )
         endpoints = [self.target]
@@ -3265,10 +3268,26 @@ class BusinessLogicEngine:
                 for param in _NUMERIC_PARAMS:
                     try:
                         await asyncio.sleep(self.rate_limit)
+                        # Establish baseline with a safe value before testing overflow
+                        baseline_status, baseline_len = 200, -1
+                        try:
+                            baseline_url = f"{base_url}?{param}=1"
+                            async with session.get(baseline_url) as br:
+                                bl_body = await br.text(errors="replace")
+                                baseline_status = br.status
+                                baseline_len = len(bl_body)
+                        except Exception:
+                            pass
                         test_url = f"{base_url}?{param}={val}"
                         async with session.get(test_url) as resp:
                             body = await resp.text(errors="replace")
-                            if resp.status == 500 or _INT_ERROR_RE.search(body):
+                            error_in_body = bool(_INT_ERROR_RE.search(body))
+                            status_changed = resp.status != baseline_status
+                            # Only flag on 5xx, or error string + response changed from baseline
+                            if (resp.status >= 500 or
+                                    (error_in_body and status_changed) or
+                                    (error_in_body and baseline_len > 0 and
+                                     abs(len(body) - baseline_len) > 200)):
                                 flaws.append({
                                     "type": "integer_overflow",
                                     "endpoint": test_url,
@@ -3280,7 +3299,9 @@ class BusinessLogicEngine:
                                     ),
                                     "proof": {
                                         "param": param, "value": val,
-                                        "status": resp.status, "excerpt": body[:300],
+                                        "status": resp.status,
+                                        "baseline_status": baseline_status,
+                                        "excerpt": body[:300],
                                     },
                                     "remediation": [
                                         "Validate numeric inputs against safe ranges before processing",
@@ -3298,9 +3319,22 @@ class BusinessLogicEngine:
                 try:
                     await asyncio.sleep(self.rate_limit)
                     payload = {"quantity": val, "amount": val, "price": val, "id": val}
+                    # Baseline POST
+                    bl_post_status, bl_post_len = 200, -1
+                    try:
+                        async with session.post(base_url, json={"quantity": 1, "amount": 1, "id": 1}) as br:
+                            bl_body = await br.text(errors="replace")
+                            bl_post_status = br.status
+                            bl_post_len = len(bl_body)
+                    except Exception:
+                        pass
                     async with session.post(base_url, json=payload) as resp:
                         body = await resp.text(errors="replace")
-                        if resp.status == 500 or _INT_ERROR_RE.search(body):
+                        error_in_body = bool(_INT_ERROR_RE.search(body))
+                        if (resp.status >= 500 or
+                                (error_in_body and resp.status != bl_post_status) or
+                                (error_in_body and bl_post_len > 0 and
+                                 abs(len(body) - bl_post_len) > 200)):
                             flaws.append({
                                 "type": "integer_overflow",
                                 "endpoint": base_url,
@@ -3604,28 +3638,116 @@ class BusinessLogicEngine:
         dashboard_paths = ["/dashboard", "/api/me", "/api/users/me", "/home", "/app"]
         weak_otps = ["000000", "111111", "123456", "999999", "000001", "111112"]
 
-        # Test 1: skip MFA step - access dashboard directly without completing MFA
+        # Test 1: skip MFA step — compare unauthenticated vs. partial-auth access.
+        #
+        # The naive approach (GET /dashboard → 200 + keyword → CRITICAL) produces
+        # near-100% false positives: most apps serve a public landing page at
+        # /dashboard that returns 200 and contains words like "email" or "user"
+        # in their HTML (login form, footer, JS vars). Proof {"status": 200} proves
+        # nothing — it doesn't establish that any authentication step occurred.
+        #
+        # A valid MFA bypass requires:
+        #   (a) an authenticated session where step 1 (credentials) is complete
+        #       but step 2 (OTP/push) was skipped, AND
+        #   (b) a protected resource returns substantively different content
+        #       compared to a fully unauthenticated request.
+        #
+        # Without a real partial-auth session we cannot make this claim.
+        # We do the following instead:
+        #   1. Fetch the path with NO session (unauthenticated baseline).
+        #   2. Fetch the same path WITH the authenticated session.
+        #   3. A finding is raised only if ALL of:
+        #      - Unauthenticated returns 401/403 or redirects to login
+        #      - Authenticated (but MFA-not-tracked) session returns 200
+        #      - Response is JSON (API endpoint) — HTML pages are too ambiguous
+        #      - Response body contains clearly authenticated content:
+        #        a JSON object with user-specific fields, not just any keyword
+
+        # Build a fresh cookie-free session for the unauthenticated baseline
+        connector_unauth = scan_proxy.make_connector(limit=5)
+        timeout_unauth   = aiohttp.ClientTimeout(total=10)
+
         for dash_path in dashboard_paths:
             url = self.target.rstrip("/") + dash_path
             try:
                 await asyncio.sleep(self.rate_limit)
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        body = await resp.text(errors="replace")
-                        sensitive_keys = ["user", "account", "profile", "email", "balance"]
-                        if any(k in body.lower() for k in sensitive_keys):
-                            flaws.append({
-                                "type": "mfa_bypass",
-                                "endpoint": url,
-                                "method": "GET",
-                                "severity": "CRITICAL",
-                                "description": f"MFA bypass: dashboard accessible without MFA completion at {url}",
-                                "proof": {"status": resp.status, "path": dash_path},
-                                "remediation": [
-                                    "Enforce MFA completion before any authenticated resource access",
-                                    "Use server-side session state to track MFA step completion",
-                                ],
-                            })
+
+                # Step A: unauthenticated baseline (fresh session, no cookies)
+                unauth_status  = None
+                unauth_body    = ""
+                async with aiohttp.ClientSession(
+                    connector=connector_unauth,
+                    timeout=timeout_unauth,
+                    connector_owner=False,
+                ) as unauth_sess:
+                    async with unauth_sess.get(url, allow_redirects=True, ssl=False) as r:
+                        unauth_status = r.status
+                        ct = r.headers.get("Content-Type", "")
+                        if "json" in ct:
+                            unauth_body = await r.text(errors="replace")
+
+                # Only proceed if unauthenticated access is actually blocked
+                if unauth_status not in (401, 403):
+                    # Resource is publicly accessible; any authenticated access
+                    # at the same path is not an MFA bypass — it's public content.
+                    logger.debug(
+                        "[Logic] MFA skip skipped %s: unauth status %s (not blocked)",
+                        url, unauth_status,
+                    )
+                    continue
+
+                # Step B: access with the current (authenticated) session
+                await asyncio.sleep(self.rate_limit)
+                async with session.get(url, allow_redirects=True, ssl=False) as resp:
+                    ct = resp.headers.get("Content-Type", "")
+
+                    # Only flag JSON API responses — HTML pages are too noisy
+                    if "json" not in ct:
+                        continue
+
+                    if resp.status != 200:
+                        continue
+
+                    body = await resp.text(errors="replace")
+
+                    # Require strong authenticated-content signals in the JSON body:
+                    # at least two of these field names must be present together
+                    strong_signals = [
+                        '"user_id"', '"userId"', '"account_id"', '"accountId"',
+                        '"username"', '"email":', '"phone":', '"access_token"',
+                        '"refresh_token"', '"session_id"', '"sessionId"',
+                        '"mfa_enabled"', '"two_factor"', '"profile"',
+                    ]
+                    signal_count = sum(1 for s in strong_signals if s in body)
+                    if signal_count < 2:
+                        continue
+
+                    flaws.append({
+                        "type":        "mfa_bypass",
+                        "endpoint":    url,
+                        "method":      "GET",
+                        "severity":    "CRITICAL",
+                        "description": (
+                            f"MFA bypass confirmed at {url}: "
+                            f"unauthenticated access was blocked (HTTP {unauth_status}) "
+                            f"but the authenticated session accessed the resource without "
+                            f"completing MFA (HTTP {resp.status}, JSON with "
+                            f"{signal_count} authenticated field signals)."
+                        ),
+                        "proof": {
+                            "unauth_status":      unauth_status,
+                            "auth_status":        resp.status,
+                            "path":               dash_path,
+                            "content_type":       ct,
+                            "auth_signals_found": signal_count,
+                            "body_snippet":       body[:300],
+                        },
+                        "remediation": [
+                            "Enforce MFA completion before any authenticated resource access",
+                            "Use server-side session state to track MFA step completion",
+                            "Return 403 from protected API endpoints until MFA step is verified",
+                        ],
+                    })
             except Exception as exc:
                 logger.debug("[Logic] MFA skip test %s: %s", url, exc)
 

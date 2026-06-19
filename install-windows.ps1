@@ -1,11 +1,38 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║       DS1 Hunter v1.0.2 - Windows Production Installer       ║
+# ║       DS1 Hunter v1.0.3 - Windows Production Installer       ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 #
 # Usage:  (extracted automatically by the .ps1 self-extractor)
 # Tested: Windows 10 21H2+, Windows 11, Windows Server 2022+
+#
+# ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.3  2026-06-16  Bug fixes & scanner improvements (patch release):
+#                     · Active Scanner: 7 scanner improvements —
+#                       SQLi error regex expanded to 6 additional DB stacks;
+#                       sensitive file list 20 → 100+ entries;
+#                       XSS: 8 payloads per param (WAF bypass variants);
+#                       CMD injection: 12 payloads (was 3);
+#                       NoSQL injection added as per-param check;
+#                       CRLF injection added (new vuln class);
+#                       Web Cache Deception added (new vuln class)
+#                     · Verifier: HHI false-positive fix (Cloudflare error pages)
+#                     · Proxy UI: "Start Proxy" button added
+#
+# v1.0.3  2026-06-08  Knowledge base overhaul (core/knowledge.py):
+#                     · 80 vuln types (was 53) — 27 new types added:
+#                       csrf, bfla, mfa_bypass, saml_injection, ldap_injection,
+#                       padding_oracle, xpath_injection, crlf_injection,
+#                       websocket_injection, second_order_sqli, session_fixation,
+#                       weak_session_token, ssl_tls_weak, file_upload_unrestricted,
+#                       subdomain_takeover, prompt_injection, llm_data_exfiltration,
+#                       bola, api_key_exposure, sensitive_data_exposure,
+#                       html_injection, default_credentials, debug_mode_enabled,
+#                       directory_listing, sensitive_file_exposure,
+#                       weak_password_policy, and more
+#                     · exploit_poc, fix_code added to every KB entry
+#                     · generate_poc() and enrich_findings_knowledge() improved
 
 param(
     [string]$SourceDir = $PSScriptRoot
@@ -145,7 +172,7 @@ Write-Host ""
 
 # ── Admin check ────────────────────────────────────────────────────────────────
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) { Write-Die "Run as Administrator:`n  Right-click PowerShell > Run as Administrator`n  Then: powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.2-windows.ps1" }
+if (-not $isAdmin) { Write-Die "Run as Administrator:`n  Right-click PowerShell > Run as Administrator`n  Then: powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.3-windows.ps1" }
 
 # Windows version check (10+)
 $winVer = [System.Environment]::OSVersion.Version
@@ -298,6 +325,10 @@ if (Test-Path $INSTALL_DIR) {
 
 New-Item -Path $INSTALL_DIR -ItemType Directory -Force | Out-Null
 
+# Proxy CA directory - writable by LocalSystem service account
+$ProxyCaDir = "$env:ProgramData\DS1Hunter\proxy_ca"
+New-Item -Path $ProxyCaDir -ItemType Directory -Force | Out-Null
+
 Write-Info "Copying files to $INSTALL_DIR..."
 $excludes = @('.venv', 'node_modules', '__pycache__', '.env', 'db.sqlite3', 'dist')
 $srcItems = Get-ChildItem -Path $SourceDir -Force | Where-Object { $_.Name -notin $excludes }
@@ -320,19 +351,33 @@ $VENV_DAPHNE = "$VENV\Scripts\daphne.exe"
 
 Write-Info "Creating venv..."
 & $PYTHON -m venv $VENV
-& $VENV_PYTHON -m pip install --upgrade pip setuptools wheel -q --timeout 120 2>&1 | Out-Null
 Write-Ok "Venv created"
 
-Write-Info "Installing Python dependencies..."
-& $VENV_PYTHON -m pip install -r "$INSTALL_DIR\requirements.txt" -q --timeout 120 --retries 5
+# pip --retries only covers connection setup, not mid-stream resets.
+# This wrapper retries at the PowerShell level with exponential backoff.
+function Invoke-PipRetry {
+    param([string[]]$PipArgs)
+    $max = 5; $n = 1; $delay = 5
+    while ($true) {
+        & $VENV_PYTHON -m pip @PipArgs
+        if ($LASTEXITCODE -eq 0) { return }
+        if ($n -ge $max) { Write-Die "pip install failed after $max attempts. Check your internet connection and try again." }
+        Write-Warn "pip download interrupted (attempt $n/$max) - retrying in ${delay}s..."
+        Start-Sleep -Seconds $delay
+        $delay = $delay * 2
+        $n++
+    }
+}
+
+Invoke-PipRetry @("install", "--upgrade", "pip", "setuptools", "wheel", "-q", "--timeout", "120")
+Write-Ok "pip bootstrapped"
+
+Write-Info "Installing Python dependencies (includes daphne, cryptography, PyYAML)..."
+Invoke-PipRetry @("install", "-r", "$INSTALL_DIR\requirements.txt", "-q", "--timeout", "120")
 Write-Ok "Dependencies installed"
 
-Write-Info "Installing daphne (ASGI server)..."
-& $VENV_PYTHON -m pip install daphne -q --timeout 120 --retries 5
-Write-Ok "Daphne ready"
-
 Write-Info "Registering ds1hunter CLI..."
-& $VENV_PIP install -e "$INSTALL_DIR" -q
+Invoke-PipRetry @("install", "-e", "$INSTALL_DIR", "-q")
 Write-Ok "CLI registered"
 
 
@@ -358,13 +403,17 @@ Write-Ok "Compiled $pycCount modules (Python $venvPyVer bytecode)"
 Write-Info "Stripping Python source files (keeping only bytecode)..."
 # Scope strip to OUR source directories only. Never touch .venv or
 # site-packages - that would delete Django and the editable install finder.
+# Only strip a .py file if a corresponding .pyc was successfully compiled
+# alongside it (-b flag places .pyc next to .py, not in __pycache__).
+# This prevents silent module loss when compilation fails (e.g. AV interference).
 foreach ($srcDir in @("$INSTALL_DIR\core", "$INSTALL_DIR\cli", "$INSTALL_DIR\web")) {
     if (Test-Path $srcDir) {
         Get-ChildItem -Path $srcDir -Filter "*.py" -Recurse -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.Name -ne "__init__.py" -and
                 $_.Name -ne "manage.py" -and
-                $_.FullName -notlike "*\migrations\*"
+                $_.FullName -notlike "*\migrations\*" -and
+                (Test-Path ($_.FullName -replace '\.py$', '.pyc'))
             } |
             Remove-Item -Force -ErrorAction SilentlyContinue
     }
@@ -394,7 +443,7 @@ Write-Step "Step 5 / 12  Building React frontend"
 Write-Info "React frontend pre-built — installing serve for static HTTPS serving..."
 Push-Location "$INSTALL_DIR\frontend"
 Write-Info "Installing 'serve' for static HTTPS serving..."
-Invoke-Npm @("install", "--prefix", $NODE_GLOBAL, "serve")
+Invoke-Npm @("install", "--prefix", $NODE_GLOBAL, "serve@14")
 $SERVE_MAIN = "$NODE_GLOBAL\node_modules\serve\build\main.js"
 if (-not (Test-Path $SERVE_MAIN)) {
     # Fallback: try installed in node_modules under serve package
@@ -420,8 +469,12 @@ if ((Test-Path $CERT) -and (Test-Path $KEY)) {
 
     # TextExtension adds proper IP SANs for 127.0.0.1 and ::1.
     # Without IP SANs, Chrome/Edge rejects the cert when accessed via IP address.
+    # DnsName and TextExtension(SAN OID 2.5.29.17) cannot both be set —
+    # Windows rejects the combination with "DnsName parameter conflicts with
+    # supplied Subject Alternative Name extension". Use Subject for CN only
+    # and put all SANs exclusively in TextExtension.
     $certParams = @{
-        DnsName           = @("localhost", "ds1hunter.local")
+        Subject           = "CN=localhost"
         TextExtension     = @("2.5.29.17={text}DNS=localhost&DNS=ds1hunter.local&IPAddress=127.0.0.1&IPAddress=::1")
         KeyAlgorithm      = "RSA"
         KeyLength         = 4096
@@ -467,13 +520,31 @@ print('OK')
     Write-Ok "Certificate exported: $CERT"
     Write-Ok "Private key exported: $KEY"
 
-    # Trust in Local Machine Root CA (removes browser warning)
+    # Trust in Local Machine Root CA (removes browser warning for Edge/Chrome)
     Write-Info "Trusting certificate in Windows Root CA store..."
     $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "LocalMachine")
     $store.Open("ReadWrite")
     $store.Add($certObj)
     $store.Close()
     Write-Ok "Certificate trusted (no browser security warning)"
+}
+
+# Firefox has its own certificate store and ignores the Windows trust store by default.
+# Enable ImportEnterpriseRoots policy so Firefox trusts Windows Root CA certificates.
+$firefoxDirs = @(
+    "C:\Program Files\Mozilla Firefox",
+    "C:\Program Files (x86)\Mozilla Firefox"
+)
+$firefoxDir = $firefoxDirs | Where-Object { Test-Path "$_\firefox.exe" } | Select-Object -First 1
+if ($firefoxDir) {
+    Write-Info "Configuring Firefox to trust Windows Root CA certificates..."
+    $policiesDir = "$firefoxDir\distribution"
+    New-Item -Path $policiesDir -ItemType Directory -Force | Out-Null
+    $policiesJson = '{"policies":{"Certificates":{"ImportEnterpriseRoots":true}}}'
+    [System.IO.File]::WriteAllText("$policiesDir\policies.json", $policiesJson, [System.Text.Encoding]::UTF8)
+    Write-Ok "Firefox configured — DS1 Hunter certificate trusted in Firefox"
+} else {
+    Write-Warn "Firefox not detected. If you use Firefox, visit https://127.0.0.1:$API_PORT once first to accept the certificate."
 }
 
 # Restrict key permissions
@@ -559,8 +630,7 @@ Set-Location "$INSTALL_DIR\frontend"
     -s build ``
     --ssl-cert "$CERT" ``
     --ssl-key  "$KEY" ``
-    -l $UI_PORT ``
-    --no-port-switching
+    -l $UI_PORT
 "@
 [System.IO.File]::WriteAllText("$BIN_DIR\start-ui.ps1", $uiScript, $utf8NoBom)
 Write-Ok "Service wrapper scripts created"
@@ -715,20 +785,54 @@ foreach ($port in @($API_PORT, $UI_PORT)) {
     }
 }
 
+# Add Windows Firewall rules so the ports are reachable on localhost
+Write-Info "Adding Windows Firewall rules for ports $API_PORT and $UI_PORT..."
+foreach ($rule in @(
+    @{Name="DS1 Hunter API (TCP $API_PORT)"; Port=$API_PORT},
+    @{Name="DS1 Hunter UI (TCP $UI_PORT)";  Port=$UI_PORT}
+)) {
+    Remove-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
+    New-NetFirewallRule -DisplayName $rule.Name `
+        -Direction Inbound -Protocol TCP -LocalPort $rule.Port `
+        -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+}
+Write-Ok "Firewall rules added"
+
 # Start services
 Write-Info "Starting services..."
 Start-Service DS1HunterAPI -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 5
 Start-Service DS1HunterUI  -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
 
-$apiSvc = Get-Service DS1HunterAPI -ErrorAction SilentlyContinue
-$apiOk  = ($apiSvc -ne $null) -and ($apiSvc.Status -eq "Running")
-$uiSvc  = Get-Service DS1HunterUI  -ErrorAction SilentlyContinue
-$uiOk   = ($uiSvc  -ne $null) -and ($uiSvc.Status  -eq "Running")
+# Wait up to 30 seconds for each port to actually accept connections
+function Wait-Port {
+    param([int]$Port, [string]$Name, [int]$TimeoutSec = 30)
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $conn = Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+        if ($conn.TcpTestSucceeded) { return $true }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
 
-if ($apiOk) { Write-Ok  "DS1HunterAPI service running" } else { Write-Warn "DS1HunterAPI did not start - check: Get-Content $LOG_DIR\api-error.log" }
-if ($uiOk)  { Write-Ok  "DS1HunterUI  service running" } else { Write-Warn "DS1HunterUI  did not start  - check: Get-Content $LOG_DIR\ui-error.log" }
+Write-Info "Waiting for API to listen on port $API_PORT..."
+$apiOk = Wait-Port -Port $API_PORT -Name "API"
+Write-Info "Waiting for UI  to listen on port $UI_PORT..."
+$uiOk  = Wait-Port -Port $UI_PORT  -Name "UI"
+
+if ($apiOk) {
+    Write-Ok "DS1HunterAPI service running"
+} else {
+    Write-Warn "DS1HunterAPI did not start. Last log lines:"
+    if (Test-Path "$LOG_DIR\api-error.log") { Get-Content "$LOG_DIR\api-error.log" -Tail 20 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow } }
+}
+if ($uiOk) {
+    Write-Ok "DS1HunterUI  service running"
+} else {
+    Write-Warn "DS1HunterUI did not start. Last log lines:"
+    if (Test-Path "$LOG_DIR\ui-error.log") { Get-Content "$LOG_DIR\ui-error.log" -Tail 20 | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow } }
+}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -751,12 +855,12 @@ Write-Host ("  ║  {0,-61}║" -f "  Username :  admin") -ForegroundColor Red
 Write-Host ("  ║  {0,-61}║" -f "  Password :  $ADMIN_PASS") -ForegroundColor Red
 Write-Host "  ║                                                               ║" -ForegroundColor Red
 Write-Host "  ╠═══════════════════════════════════════════════════════════════╣" -ForegroundColor Green
-Write-Host "  ║  BROWSER SETUP  (one time)                                    ║" -ForegroundColor Green
+Write-Host "  ║  BROWSER SETUP                                                ║" -ForegroundColor Green
 Write-Host "  ║                                                               ║" -ForegroundColor Green
-Write-Host "  ║  Certificate auto-trusted in Windows Root CA store.           ║" -ForegroundColor Green
-Write-Host "  ║  If browser still shows a warning:                            ║" -ForegroundColor Green
-Write-Host "  ║    Run: certmgr.msc > Trusted Root CAs > Certificates         ║" -ForegroundColor Green
-Write-Host "  ║    Verify 'DS1 Hunter TLS' is present.                        ║" -ForegroundColor Green
+Write-Host "  ║  Edge / Chrome: certificate auto-trusted, no action needed.   ║" -ForegroundColor Green
+Write-Host "  ║  Firefox: auto-configured to trust Windows Root CA store.     ║" -ForegroundColor Green
+Write-Host "  ║    If Firefox still shows a warning, restart Firefox first.   ║" -ForegroundColor Green
+Write-Host "  ║    Or visit https://127.0.0.1:$API_PORT once and accept cert.    ║" -ForegroundColor Green
 Write-Host "  ║                                                               ║" -ForegroundColor Green
 Write-Host "  ╠═══════════════════════════════════════════════════════════════╣" -ForegroundColor Green
 Write-Host "  ║  SERVICE MANAGEMENT                                           ║" -ForegroundColor Green

@@ -18,7 +18,7 @@
 ## Install
 
 ```bash
-sudo bash ds1hunter-CE-v1.0.2-macos.run
+sudo bash ds1hunter-CE-v1.0.3-macos.run
 ```
 
 The installer handles everything:
@@ -59,9 +59,9 @@ tail -f /var/log/ds1hunter/ui.log
 ## Verify SHA256
 
 ```bash
-shasum -a 256 -c ds1hunter-CE-v1.0.2-macos.run.sha256
+shasum -a 256 -c ds1hunter-CE-v1.0.3-macos.run.sha256
 ```
 
 ## Note on Python Compatibility
 
-v1.0.2 fixes the `bad magic number` crash that affected macOS users running Python 3.14. The installer now compiles Python bytecode using your installed Python version at install time.
+v1.0.3 adds 5 new scanner modules (Active Scanner, Cloud Storage, LDAP Injection, Padding Oracle), expands LLM01 payloads to 686, and adds spyware detection to the Mobile Pentester. The installer compiles Python bytecode using your installed Python version at install time, fixing the `bad magic number` crash on Python 3.14+.

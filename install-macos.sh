@@ -1,12 +1,66 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║        DS1 Hunter v1.0.2 - macOS Production Installer        ║
+# ║        DS1 Hunter v1.0.4 - macOS Production Installer        ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 #
 # Usage:  sudo bash install-macos.sh
 # Tested: macOS Ventura 13, Sonoma 14, Sequoia 15 (Intel + Apple Silicon)
+#
+# ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
+#                     · 8 false-positive fixes: LDAP injection confirmation
+#                       now requires error keywords (not just HTTP 500);
+#                       CORS flagged only when credentials=true + sensitive
+#                       data; integer overflow requires content diff too;
+#                       S3 403 no longer reported (expected behavior);
+#                       CSS injection requires behavioral evidence;
+#                       public third-party subdomain filtering added;
+#                       Verifier chain requires 2 independent signals;
+#                       accuracy scorer thresholds recalibrated
+#                     · OOB VPS deployed: HTTP callbacks on port 8089,
+#                       DNS on port 53, poll API at /poll/<token>;
+#                       DS1 Hunter polls VPS before checking local cache
+#                     · macOS fix: Homebrew commands now run as the
+#                       invoking non-root user (sudo -u $SUDO_USER) to
+#                       avoid "Running Homebrew as root" fatal error
+#
+# v1.0.3  2026-06-16  Bug fixes & scanner improvements (patch release):
+#                     · macOS fix: launchd services now set PATH explicitly so
+#                       Node.js (Homebrew) is found when running as daemon user;
+#                       fixes ERR_CONNECTION_REFUSED on Chrome/Safari at :13000
+#                     · macOS fix: SSL key permissions changed from chgrp _daemon
+#                       to chown _ds1hunter so the service user can read the key
+#                     · macOS fix: cert now also trusted in user Login keychain
+#                       (fixes Safari requiring manual cert trust)
+#                     · Active Scanner: 7 scanner improvements —
+#                       SQLi error regex expanded to 6 additional DB stacks
+#                       (DB2, Firebird, MSSQL OLE, Hibernate, JDBC, PDO);
+#                       sensitive file list 20 → 100+ entries;
+#                       XSS: 8 payloads per param (WAF bypass variants);
+#                       CMD injection: 12 payloads (was 3);
+#                       NoSQL injection added as per-param check;
+#                       CRLF injection added (new vuln class);
+#                       Web Cache Deception added (new vuln class)
+#                     · Verifier: HHI false-positive fix — Cloudflare DNS error
+#                       pages no longer counted as Host Header Injection hits
+#                     · Proxy UI: "Start Proxy" button added — proxy can now be
+#                       restarted from the UI without restarting the server
+#
+# v1.0.3  2026-06-08  Knowledge base overhaul (core/knowledge.py):
+#                     · 80 vuln types (was 53) — 27 new types added:
+#                       csrf, bfla, mfa_bypass, saml_injection, ldap_injection,
+#                       padding_oracle, xpath_injection, crlf_injection,
+#                       websocket_injection, second_order_sqli, session_fixation,
+#                       weak_session_token, ssl_tls_weak, file_upload_unrestricted,
+#                       subdomain_takeover, prompt_injection, llm_data_exfiltration,
+#                       bola, api_key_exposure, sensitive_data_exposure,
+#                       html_injection, default_credentials, debug_mode_enabled,
+#                       directory_listing, sensitive_file_exposure,
+#                       weak_password_policy, and more
+#                     · exploit_poc, fix_code added to every KB entry
+#                     · generate_poc() and enrich_findings_knowledge() improved
 
 set -euo pipefail
 
@@ -15,7 +69,7 @@ INSTALL_DIR="/opt/ds1hunter"
 SERVICE_USER="_ds1hunter"
 API_PORT=18000
 UI_PORT=13000
-VERSION="1.0.3"
+VERSION="1.0.4"
 CERT_DIR="$INSTALL_DIR/deploy/certs"
 CERT="$CERT_DIR/ds1hunter.crt"
 KEY="$CERT_DIR/ds1hunter.key"
@@ -66,7 +120,7 @@ lctl_unload() {
 echo -e "${CYAN}${BOLD}"
 echo "  ╔═══════════════════════════════════════════════════════╗"
 echo "  ║                                                       ║"
-echo "  ║     DS1 HUNTER  Community Edition v${VERSION}         ║"
+echo "  ║     DS1 HUNTER  Community Edition v${VERSION}              ║"
 echo "  ║             \"Hunt. Chain. Prove.\"                     ║"
 echo "  ║                 by DigitalSecurity1                   ║"
 echo "  ║                                                       ║"
@@ -98,10 +152,25 @@ fi
 step "Step 1 / 12  Checking system dependencies"
 # ══════════════════════════════════════════════════════════════════════════
 
-# Homebrew — must not be installed as root; detect actual user via $SUDO_USER
+# Homebrew must never run as root — detect the invoking user via $SUDO_USER
+REAL_USER="${SUDO_USER:-}"
+if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+  # Truly running as root (not via sudo) — Homebrew cannot help us
+  REAL_USER=""
+fi
+
+# brew_cmd: always invoke brew as the non-root user when available.
+# This avoids the "Running Homebrew as root is not supported" fatal error.
+brew_cmd() {
+  if [[ -n "$REAL_USER" ]]; then
+    sudo -u "$REAL_USER" brew "$@"
+  else
+    brew "$@"
+  fi
+}
+
 if ! command -v brew &>/dev/null; then
-  REAL_USER="${SUDO_USER:-}"
-  if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+  if [[ -z "$REAL_USER" ]]; then
     die "Homebrew is not installed and cannot be auto-installed when running directly as root.\n\n  1. Exit this installer\n  2. Install Homebrew as your normal user:\n       /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\n  3. Re-run: sudo bash install-macos.sh"
   fi
   warn "Homebrew not found — installing as '$REAL_USER'..."
@@ -111,10 +180,10 @@ if ! command -v brew &>/dev/null; then
     die "Homebrew installation failed.\n  Install manually: https://brew.sh — then re-run this installer."
   [[ -d "/opt/homebrew/bin" ]] && export PATH="/opt/homebrew/bin:$PATH"
   [[ -d "/usr/local/bin" ]]    && export PATH="/usr/local/bin:$PATH"
-  BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
+  BREW_PREFIX="$(brew_cmd --prefix 2>/dev/null || echo /opt/homebrew)"
   ok "Homebrew installed"
 else
-  BREW_PREFIX="$(brew --prefix)"
+  BREW_PREFIX="$(brew_cmd --prefix)"
   ok "Homebrew at $BREW_PREFIX"
 fi
 
@@ -128,14 +197,14 @@ done
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   warn "Missing tools: ${MISSING[*]}"
-  info "Installing via Homebrew..."
-  brew update -q
+  info "Installing via Homebrew (running as '$REAL_USER')..."
+  brew_cmd update -q
   for pkg in "${MISSING[@]}"; do
     case "$pkg" in
-      python3) brew install python@3.13 -q ;;
-      node|npm) brew install node -q ;;
-      openssl) brew install openssl@3 -q ;;
-      *) brew install "$pkg" -q ;;
+      python3) brew_cmd install python@3.13 -q ;;
+      node|npm) brew_cmd install node -q ;;
+      openssl) brew_cmd install openssl@3 -q ;;
+      *) brew_cmd install "$pkg" -q ;;
     esac
   done
   export PATH="$BREW_PREFIX/bin:$PATH"
@@ -227,21 +296,44 @@ VENV="$INSTALL_DIR/.venv"
 PYTHON="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 
+# pip --retries only covers connection setup, not mid-stream resets.
+# This wrapper retries at the shell level with exponential backoff.
+pip_retry() {
+    local max=5 n=1 delay=5
+    until "$PIP" "$@"; do
+        [[ $n -ge $max ]] && die "pip install failed after $max attempts. Check your internet connection and try again."
+        warn "pip download interrupted (attempt $n/$max) — retrying in ${delay}s..."
+        sleep "$delay"
+        delay=$((delay * 2))
+        n=$((n + 1))
+    done
+}
+
 info "Creating venv..."
 python3 -m venv "$VENV"
-"$PIP" install --upgrade pip setuptools wheel -q
+pip_retry install --upgrade pip setuptools wheel -q
 ok "Venv created"
 
-info "Installing Python dependencies (this may take a few minutes)..."
-"$PIP" install -r "$INSTALL_DIR/requirements.txt" -q
-ok "Python dependencies installed"
+# Export Homebrew openssl/libffi paths so cryptography and lxml can find them
+# if they need to compile from source (e.g. Apple Silicon, new Python minor).
+# Binary wheels are available for most configurations, but this is a safe fallback.
+if [[ -d "$BREW_PREFIX/opt/openssl@3" ]]; then
+  export LDFLAGS="-L$BREW_PREFIX/opt/openssl@3/lib ${LDFLAGS:-}"
+  export CPPFLAGS="-I$BREW_PREFIX/opt/openssl@3/include ${CPPFLAGS:-}"
+  export PKG_CONFIG_PATH="$BREW_PREFIX/opt/openssl@3/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+fi
+if [[ -d "$BREW_PREFIX/opt/libffi" ]]; then
+  export LDFLAGS="-L$BREW_PREFIX/opt/libffi/lib ${LDFLAGS:-}"
+  export CPPFLAGS="-I$BREW_PREFIX/opt/libffi/include ${CPPFLAGS:-}"
+  export PKG_CONFIG_PATH="$BREW_PREFIX/opt/libffi/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+fi
 
-info "Installing daphne (ASGI server)..."
-"$PIP" install daphne -q
-ok "Daphne ready"
+info "Installing Python dependencies (this may take a few minutes)..."
+pip_retry install -r "$INSTALL_DIR/requirements.txt" -q
+ok "Python dependencies installed (includes daphne, cryptography, PyYAML)"
 
 info "Registering ds1hunter CLI..."
-"$PIP" install -e "$INSTALL_DIR" -q
+pip_retry install -e "$INSTALL_DIR" -q
 ok "CLI registered"
 
 
@@ -355,15 +447,32 @@ fi
 chmod 640 "$KEY"
 chmod 644 "$CERT"
 
+# Make key readable by the service user
+chown root:"$SERVICE_USER" "$KEY" 2>/dev/null || chmod 644 "$KEY"
+
 # Trust the certificate in the macOS System Keychain
 info "Adding certificate to macOS System Keychain..."
 if security add-trusted-cert -d -r trustRoot \
      -k /Library/Keychains/System.keychain \
      "$CERT" 2>/dev/null; then
-  ok "Certificate trusted system-wide (no browser warning)"
+  ok "Certificate trusted in System Keychain"
 else
-  warn "Could not auto-trust certificate. Import manually:"
-  warn "  Open Keychain Access > System > Import $CERT > Trust > Always Trust"
+  warn "Could not auto-trust certificate in System Keychain."
+fi
+
+# Also trust in the actual user's Login keychain (needed for Safari)
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+  USER_HOME=$(eval echo "~$SUDO_USER")
+  LOGIN_KC="$USER_HOME/Library/Keychains/login.keychain-db"
+  if [[ -f "$LOGIN_KC" ]]; then
+    if sudo -u "$SUDO_USER" security add-trusted-cert -r trustRoot \
+         -k "$LOGIN_KC" "$CERT" 2>/dev/null; then
+      ok "Certificate trusted in $SUDO_USER Login Keychain (Safari will trust it)"
+    else
+      warn "Could not auto-trust in Login Keychain. Safari fix:"
+      warn "  Open Keychain Access > Login > Import $CERT > Trust > Always Trust"
+    fi
+  fi
 fi
 
 
@@ -430,6 +539,9 @@ mkdir -p "$INSTALL_DIR/bin"
 
 cat > "$INSTALL_DIR/bin/start-api.sh" << APISH_EOF
 #!/bin/bash
+# DS1 Hunter API service wrapper
+# Explicitly set PATH so launchd daemon context can find binaries
+export PATH="${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 set -a
 source "$INSTALL_DIR/web/.env"
 set +a
@@ -440,11 +552,14 @@ APISH_EOF
 
 cat > "$INSTALL_DIR/bin/start-ui.sh" << UISH_EOF
 #!/bin/bash
+# DS1 Hunter UI service wrapper
+# Explicitly set PATH so launchd daemon context can find Node.js for serve
+export PATH="${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 exec "$SERVE_BIN" -s "$INSTALL_DIR/frontend/build" \\
     --ssl-cert "${CERT}" \\
     --ssl-key  "${KEY}" \\
     -l ${UI_PORT} \\
-    --no-port-switching
+    --no-clipboard
 UISH_EOF
 
 chmod +x "$INSTALL_DIR/bin/start-api.sh" "$INSTALL_DIR/bin/start-ui.sh"
@@ -500,10 +615,16 @@ step "Step 11 / 12  Setting permissions"
 mkdir -p "$LOG_DIR"
 chown "$SERVICE_USER" "$LOG_DIR"
 
+# Proxy CA directory (service user must be able to write CA cert)
+mkdir -p /var/lib/ds1hunter/proxy_ca
+chown -R "$SERVICE_USER" /var/lib/ds1hunter
+chmod 700 /var/lib/ds1hunter/proxy_ca
+
 # Installation directory
 chown -R "$SERVICE_USER" "$INSTALL_DIR"
+# Key must be readable by the service user that runs serve and daphne
 chmod 640 "$KEY"
-chgrp 67 "$KEY"   # _daemon group can read the key
+chown root:"$SERVICE_USER" "$KEY"   # service user's group can read the key
 
 # CLI symlink (available to all users)
 ln -sf "$INSTALL_DIR/.venv/bin/ds1hunter" /usr/local/bin/ds1hunter
@@ -546,6 +667,14 @@ cat > "$LAUNCHD_DIR/$PLIST_API.plist" << PLIST_EOF
     <key>ThrottleInterval</key>
     <integer>5</integer>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/var/empty</string>
+    </dict>
+
     <key>StandardOutPath</key>
     <string>${LOG_DIR}/api.log</string>
 
@@ -585,6 +714,14 @@ cat > "$LAUNCHD_DIR/$PLIST_UI.plist" << PLIST_EOF
 
     <key>ThrottleInterval</key>
     <integer>5</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${BREW_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/var/empty</string>
+    </dict>
 
     <key>StandardOutPath</key>
     <string>${LOG_DIR}/ui.log</string>

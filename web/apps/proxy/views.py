@@ -52,6 +52,40 @@ class ProxyStatusView(APIView):
         })
 
 
+class ProxyStartView(APIView):
+    """POST — start or restart the intercept proxy without restarting Daphne."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        import time as _time
+        srv = get_proxy_server()
+        if srv and srv.running:
+            return Response({
+                "running": True,
+                "host":    srv.host,
+                "port":    srv.port,
+                "detail":  "Proxy is already running.",
+            })
+
+        from apps.proxy.apps import start_proxy
+        try:
+            new_srv = start_proxy()
+        except Exception as exc:
+            logger.error("[ProxyStartView] Failed to start proxy: %s", exc, exc_info=True)
+            return Response({"detail": f"Failed to start proxy: {exc}"}, status=500)
+
+        _time.sleep(0.5)
+
+        running = bool(new_srv.running)
+        return Response({
+            "running": running,
+            "host":    new_srv.host,
+            "port":    new_srv.port,
+            "detail":  "Proxy started." if running else
+                       "Thread launched but failed to bind — check server logs.",
+        }, status=200 if running else 500)
+
+
 class ProxyHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -813,13 +847,14 @@ class OpenAPIReportView(APIView):
         fname = f"openapi_{safe}_{session_id[:8]}.{fmt}"
 
         if fmt == "pdf":
-            gen.generate_pdf(fname)
+            filepath = gen.generate_pdf(fname)
         elif fmt == "html":
-            gen.generate_html(fname)
+            filepath = gen.generate_html(fname)
         else:
-            gen.generate_json(fname)
+            filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 # ── BOLA/IDOR Tester ─────────────────────────────────────────────────────────
@@ -1149,13 +1184,14 @@ class APIAuditReportView(APIView):
         fname = f"api_audit_{safe}_{session_id[:8]}.{fmt}"
 
         if fmt == "pdf":
-            gen.generate_pdf(fname)
+            filepath = gen.generate_pdf(fname)
         elif fmt == "html":
-            gen.generate_html(fname)
+            filepath = gen.generate_html(fname)
         else:
-            gen.generate_json(fname)
+            filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 # ── API Pen Tester ─────────────────────────────────────────────────────────
@@ -1302,13 +1338,14 @@ class APIPentestReportView(APIView):
         fname = f"api_pentest_{safe}_{session_id[:8]}.{fmt}"
 
         if fmt == "pdf":
-            gen.generate_pdf(fname)
+            filepath = gen.generate_pdf(fname)
         elif fmt == "html":
-            gen.generate_html(fname)
+            filepath = gen.generate_html(fname)
         else:
-            gen.generate_json(fname)
+            filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 class APIPentestMetaView(APIView):
@@ -2210,7 +2247,8 @@ class ActiveScanReportView(APIView):
         else:
             filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 # ── Verifier Views ────────────────────────────────────────────────────────────
@@ -2302,13 +2340,14 @@ class VerifyReportView(APIView):
         fname = f"verifier_{safe}_{vsid[:8]}.{fmt}"
 
         if fmt == "pdf":
-            gen.generate_pdf(fname)
+            filepath = gen.generate_pdf(fname)
         elif fmt == "html":
-            gen.generate_html(fname)
+            filepath = gen.generate_html(fname)
         else:
-            gen.generate_json(fname)
+            filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 class MobilePentestReportView(APIView):
@@ -2345,7 +2384,8 @@ class MobilePentestReportView(APIView):
         else:
             filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
 
 
 class ScannerReportDownloadView(APIView):
@@ -2470,10 +2510,11 @@ class AILLMReportView(APIView):
         fname = f"ai_llm_{safe}_{session_id[:8]}.{fmt}"
 
         if fmt == "pdf":
-            gen.generate_pdf(fname)
+            filepath = gen.generate_pdf(fname)
         elif fmt == "html":
-            gen.generate_html(fname)
+            filepath = gen.generate_html(fname)
         else:
-            gen.generate_json(fname)
+            filepath = gen.generate_json(fname)
 
-        return Response({"filename": fname, "url": f"/api/proxy/scanner-report/{fname}"})
+        actual_fname = filepath.name
+        return Response({"filename": actual_fname, "url": f"/api/proxy/scanner-report/{actual_fname}"})
