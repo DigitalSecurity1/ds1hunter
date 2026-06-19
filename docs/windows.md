@@ -18,7 +18,7 @@
 Open **PowerShell as Administrator**, then run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.2-windows.ps1
+powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.3-windows.ps1
 ```
 
 The installer handles everything:
@@ -62,8 +62,8 @@ Get-Content C:\ds1hunter\logs\ui.log  -Tail 50 -Wait
 ## Verify SHA256
 
 ```powershell
-Get-FileHash ds1hunter-CE-v1.0.2-windows.ps1 -Algorithm SHA256
-# Compare with contents of ds1hunter-CE-v1.0.2-windows.ps1.sha256
+Get-FileHash ds1hunter-CE-v1.0.3-windows.ps1 -Algorithm SHA256
+# Compare with contents of ds1hunter-CE-v1.0.3-windows.ps1.sha256
 ```
 
 ## Troubleshooting

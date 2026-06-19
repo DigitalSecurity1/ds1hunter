@@ -1,12 +1,49 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║          DS1 Hunter v1.0.2 - Linux Production Installer      ║
+# ║          DS1 Hunter v1.0.4 - Linux Production Installer      ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 #
 # Usage:  sudo bash install-linux.sh
 # Tested: Debian 12, Ubuntu 22.04/24.04, Kali Linux 2024+
+#
+# ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
+#                     · 8 false-positive fixes: LDAP injection, CORS,
+#                       integer overflow, S3 403, CSS injection, public
+#                       subdomain filtering, Verifier chain (2 signals
+#                       required), accuracy scorer recalibrated
+#                     · OOB VPS: HTTP :8089 + DNS :53 callback server;
+#                       poll API at /poll/<token>; DS1 Hunter polls VPS
+#                       before checking local Django cache
+#                     · No schema changes — migration runs in zero time
+#
+# v1.0.3  2026-06-16  Bug fixes & scanner improvements (patch release):
+#                     · Active Scanner: 7 scanner improvements —
+#                       SQLi error regex expanded to 6 additional DB stacks;
+#                       sensitive file list 20 → 100+ entries;
+#                       XSS: 8 payloads per param (WAF bypass variants);
+#                       CMD injection: 12 payloads (was 3);
+#                       NoSQL injection added as per-param check;
+#                       CRLF injection added (new vuln class);
+#                       Web Cache Deception added (new vuln class)
+#                     · Verifier: HHI false-positive fix (Cloudflare error pages)
+#                     · Proxy UI: "Start Proxy" button added
+#
+# v1.0.3  2026-06-08  Knowledge base overhaul (core/knowledge.py):
+#                     · 80 vuln types (was 53) — 27 new types added:
+#                       csrf, bfla, mfa_bypass, saml_injection, ldap_injection,
+#                       padding_oracle, xpath_injection, crlf_injection,
+#                       websocket_injection, second_order_sqli, session_fixation,
+#                       weak_session_token, ssl_tls_weak, file_upload_unrestricted,
+#                       subdomain_takeover, prompt_injection, llm_data_exfiltration,
+#                       bola, api_key_exposure, sensitive_data_exposure,
+#                       html_injection, default_credentials, debug_mode_enabled,
+#                       directory_listing, sensitive_file_exposure,
+#                       weak_password_policy, and more
+#                     · exploit_poc, fix_code added to every KB entry
+#                     · generate_poc() and enrich_findings_knowledge() improved
 
 set -euo pipefail
 
@@ -15,7 +52,7 @@ INSTALL_DIR="/opt/ds1hunter"
 SERVICE_USER="ds1hunter"
 API_PORT=18000
 UI_PORT=13000
-VERSION="1.0.3"
+VERSION="1.0.4"
 CERT_DIR="$INSTALL_DIR/deploy/certs"
 CERT="$CERT_DIR/ds1hunter.crt"
 KEY="$CERT_DIR/ds1hunter.key"
@@ -104,6 +141,23 @@ python3 -m venv --help &>/dev/null || {
   ok "python3-venv installed"
 }
 
+# Native build dependencies — required by cryptography, lxml, and aiohttp when
+# binary wheels are unavailable (ARM, Alpine, minimal containers, older Debian).
+# On x86-64 Ubuntu/Debian with Python 3.10+ all packages ship manylinux wheels
+# so these are a no-op, but they prevent hard failures on edge-case platforms.
+info "Ensuring native build dependencies..."
+apt-get install -y -q \
+  build-essential \
+  pkg-config \
+  python3-dev \
+  libssl-dev \
+  libffi-dev \
+  libpq-dev \
+  libxml2-dev \
+  libxslt1-dev \
+  2>/dev/null || true
+ok "Native build dependencies ready"
+
 
 # ══════════════════════════════════════════════════════════════════════════
 step "Step 2 / 12  Preparing installation directory"
@@ -145,9 +199,10 @@ else
   ok "System user '$SERVICE_USER' created"
 fi
 
-# Ensure the home dir exists (upgrade-safe)
-mkdir -p /var/lib/ds1hunter
-chown "$SERVICE_USER:$SERVICE_USER" /var/lib/ds1hunter
+# Ensure the home dir and proxy CA dir exist (upgrade-safe)
+mkdir -p /var/lib/ds1hunter/proxy_ca
+chown -R "$SERVICE_USER:$SERVICE_USER" /var/lib/ds1hunter
+chmod 700 /var/lib/ds1hunter/proxy_ca
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -158,21 +213,30 @@ VENV="$INSTALL_DIR/.venv"
 PYTHON="$VENV/bin/python"
 PIP="$VENV/bin/pip"
 
+# pip --retries only covers connection setup, not mid-stream resets.
+# This wrapper retries at the shell level with exponential backoff.
+pip_retry() {
+    local max=5 n=1 delay=5
+    until "$PIP" "$@"; do
+        [[ $n -ge $max ]] && die "pip install failed after $max attempts. Check your internet connection and try again."
+        warn "pip download interrupted (attempt $n/$max) — retrying in ${delay}s..."
+        sleep "$delay"
+        delay=$((delay * 2))
+        n=$((n + 1))
+    done
+}
+
 info "Creating venv..."
 python3 -m venv "$VENV"
-"$PIP" install --upgrade pip setuptools wheel -q
+pip_retry install --upgrade pip setuptools wheel -q
 ok "Venv created"
 
 info "Installing Python dependencies (this may take a few minutes)..."
-"$PIP" install -r "$INSTALL_DIR/requirements.txt" -q
-ok "Python dependencies installed"
-
-info "Installing daphne (ASGI server)..."
-"$PIP" install daphne -q
-ok "Daphne ready"
+pip_retry install -r "$INSTALL_DIR/requirements.txt" -q
+ok "Python dependencies installed (includes daphne, cryptography, PyYAML)"
 
 info "Registering ds1hunter CLI..."
-"$PIP" install -e "$INSTALL_DIR" -q
+pip_retry install -e "$INSTALL_DIR" -q
 ok "CLI registered"
 
 

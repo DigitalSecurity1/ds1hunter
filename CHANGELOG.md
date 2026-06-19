@@ -1,5 +1,83 @@
 # Changelog
 
+## v1.0.4 — 2026-06-18
+
+### Accuracy Improvements (8 False-Positive Fixes)
+
+**LDAP Injection — confirmation tightened**
+- Confirmation now requires LDAP-specific keywords in the response body in addition to HTTP 500. Generic server errors no longer produce a finding.
+
+**CORS Scanner — precision improved**
+- Reflective CORS is only flagged when `Access-Control-Allow-Credentials: true` is set and the endpoint returns sensitive content. Public resources and non-credentialed wildcard responses are suppressed.
+
+**Integer Overflow — evidence requirement raised**
+- Both a status-code change and a meaningful response-body difference are now required. Status-only differences (e.g. 400 for any invalid integer) are no longer reported.
+
+**S3 403 — false classification removed**
+- A 403 from AWS S3 is correct, expected behaviour (public access blocked). Only publicly listable buckets (200) and CORS misconfigurations are now reported.
+
+**CSS Injection — reflection no longer sufficient**
+- Confirmation requires headless-browser evidence that the injected value was interpreted as CSS (visible render change). Verbatim reflection in the response body alone is suppressed.
+
+**Public Subdomain Filtering**
+- Findings against known CDN, analytics, tracking, and social-media subdomains that are referenced by the target but not owned by it are suppressed before reporting.
+
+**Verifier Chain — two-signal requirement**
+- The Verifier now requires two independent evidence channels before promoting a candidate to Confirmed. Single-signal findings land in Needs Review.
+
+**Accuracy Scorer — threshold recalibration**
+- Signal weights updated based on observed reliability. High-noise signals (minor timing < 200 ms, response-size diff only) receive lower weight. High-reliability signals (OOB callback, verbatim data extraction) receive increased weight.
+
+### OOB Infrastructure
+
+**Production VPS deployed**
+- Dedicated out-of-band callback VPS now receives HTTP callbacks (port 8089) and DNS callbacks (port 53) from blind vulnerability probes.
+- Poll API: `GET /poll/<token>` returns `{"received": true/false, "protocol": "http"/"dns", "time": ..., "src_ip": ...}`.
+- DS1 Hunter's `get_callback()` polls the VPS before checking local Django cache, enabling reliable blind detection against external targets without the operator machine needing to be reachable.
+- Token format: `{8-hex-scan-id}-{module-abbrev}-{4-digit-seq}` (e.g. `a1b2c3d4-ssrf-0012`).
+
+### macOS Installer Fix
+
+- **Homebrew root error resolved**: `brew update` / `brew install` now run via `sudo -u $SUDO_USER` so Homebrew always executes as the invoking non-root user. Eliminates the fatal "Running Homebrew as root is not supported" error when running `sudo bash install-macos.sh`.
+- **Banner frame aligned**: the DS1 HUNTER installer banner line was 5 characters too short, causing the right border to appear detached. Fixed by correcting the trailing padding.
+
+### No Schema Changes
+- `manage.py migrate` runs in zero time — no database changes in this release.
+
+---
+
+## v1.0.3 — 2026-06-16
+
+### Scanner Improvements
+
+**Active Scanner: 7 scanner improvements**
+- SQLi error regex expanded to 6 additional database stacks: DB2, Firebird, MSSQL OLE, Hibernate, JDBC, PDO
+- Sensitive file list expanded from 20 to 100+ entries
+- XSS: 8 payloads per parameter (WAF bypass variants added)
+- Command injection: 12 payloads per parameter (was 3)
+- NoSQL injection added as per-parameter check
+- CRLF injection added as new vulnerability class
+- Web Cache Deception added as new vulnerability class
+
+**Verifier: Cloudflare false-positive fix**
+- Host Header Injection: Cloudflare DNS error pages no longer counted as HHI hits. Only direct application-level header reflection is flagged.
+
+**Knowledge Base Overhaul (core/knowledge.py)**
+- 80 vulnerability types (was 53) — 27 new types added: csrf, bfla, mfa_bypass, saml_injection, ldap_injection, padding_oracle, xpath_injection, crlf_injection, websocket_injection, second_order_sqli, session_fixation, weak_session_token, ssl_tls_weak, file_upload_unrestricted, subdomain_takeover, prompt_injection, llm_data_exfiltration, bola, api_key_exposure, sensitive_data_exposure, html_injection, default_credentials, debug_mode_enabled, directory_listing, sensitive_file_exposure, weak_password_policy
+- `exploit_poc` and `fix_code` added to every KB entry
+- `generate_poc()` substitutes placeholders with actual finding data at runtime
+- `enrich_findings_knowledge()` now attaches `exploit_poc` and `fix_code` to every finding
+
+**Proxy UI**
+- "Start Proxy" button added — proxy can now be restarted from the UI without restarting the server
+
+**macOS launchd service fixes**
+- Services now set PATH explicitly so Node.js (Homebrew) is found when running as daemon user — fixes ERR_CONNECTION_REFUSED on Chrome/Safari at :13000
+- SSL key permissions changed from `chgrp _daemon` to `chown _ds1hunter` so the service user can read the key
+- Certificate now also trusted in user Login Keychain — fixes Safari requiring manual cert trust
+
+---
+
 ## v1.0.2 — 2026-05-31
 
 ### New Features

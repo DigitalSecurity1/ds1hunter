@@ -16,7 +16,7 @@
 ## Install
 
 ```bash
-sudo bash ds1hunter-CE-v1.0.2-linux.run
+sudo bash ds1hunter-CE-v1.0.3-linux.run
 ```
 
 That is the only command needed. The installer handles everything:
@@ -61,5 +61,5 @@ journalctl -u ds1hunter-ui -f
 ## Verify SHA256
 
 ```bash
-sha256sum -c ds1hunter-CE-v1.0.2-linux.run.sha256
+sha256sum -c ds1hunter-CE-v1.0.3-linux.run.sha256
 ```
