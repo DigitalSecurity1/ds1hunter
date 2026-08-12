@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DS1 Hunter - macOS Release Builder
-# Produces: dist/ds1hunter-CE-v1.0.4-macos.run
+# Produces: dist/ds1hunter-CE-v1.0.5-macos.run
 #
 # Can be run from Linux or macOS.
 # Python 3.13 .pyc bytecode is platform-neutral (same format on Linux/macOS/Windows).
@@ -11,6 +11,18 @@
 #   Package  -> self-extracting .run (bash header + base64-encoded tarball)
 #
 # ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.5  2026-07-13  Accuracy overhaul + BOLA wiring + new coverage:
+#                     · TLS cert/key ownership fixed (key owned directly by
+#                       service user); cert-trust check avoids a redundant
+#                       Keychain password prompt on reinstall
+#                     · Accuracy scorer bypass removed (root cause of a
+#                       false-positive flood) + ~25 scoring-gap fixes
+#                     · Real two-role BOLA/IDOR testing wired into Hunt
+#                     · Race-condition detection upgraded (single-packet sync)
+#                     · New gRPC / gRPC-Web scanner
+#                     · Log4Shell now OOB-confirmed instead of a dead
+#                       placeholder domain
+#
 # v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
 #                     · 8 false-positive fixes across LDAP injection,
 #                       CORS, integer overflow, S3 403, CSS injection,
@@ -44,7 +56,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(mktemp -d /tmp/ds1hunter-macos-build-XXXXXX)"
 PAYLOAD="$BUILD_DIR/ds1hunter-${VERSION}"
@@ -104,6 +116,12 @@ rsync -a \
   --exclude='ds1hunter.egg-info/' \
   --exclude='dist/' \
   --exclude='windows/' \
+  --exclude='.git/' \
+  --exclude='.claude/' \
+  --exclude='.pytest_cache/' \
+  --exclude='*.deb' \
+  --exclude='*.log' \
+  --exclude='generate_*.py' \
   --exclude='frontend/src/' \
   --exclude='frontend/build/' \
   --exclude='frontend/.env' \
@@ -179,16 +197,16 @@ info "Building .run file..."
 cat > "$OUTPUT" << 'SFXEOF'
 #!/usr/bin/env bash
 # ╔════════════════════════════════════════════════════════════╗
-# ║    DS1 Hunter v1.0.4 — macOS Self-Extracting Installer     ║
+# ║    DS1 Hunter v1.0.5 — macOS Self-Extracting Installer     ║
 # ║                  by DigitalSecurity1                       ║
 # ║              "Hunt. Chain. Prove."                         ║
 # ╚════════════════════════════════════════════════════════════╝
 #
-# Usage: sudo bash ds1hunter-CE-v1.0.4-macos.run
+# Usage: sudo bash ds1hunter-CE-v1.0.5-macos.run
 #
 # If macOS Gatekeeper blocks execution:
-#   xattr -d com.apple.quarantine ds1hunter-CE-v1.0.4-macos.run
-#   sudo bash ds1hunter-CE-v1.0.4-macos.run
+#   xattr -d com.apple.quarantine ds1hunter-CE-v1.0.5-macos.run
+#   sudo bash ds1hunter-CE-v1.0.5-macos.run
 #
 # Tested: macOS Ventura 13+, Sonoma 14+, Sequoia 15+ (Intel + Apple Silicon)
 
@@ -204,7 +222,7 @@ RESET="\033[0m"
 echo -e "${CYAN}${BOLD}"
 echo "  ╔═══════════════════════════════════════════════════════╗"
 echo "  ║                                                       ║"
-echo "  ║     DS1 HUNTER  Community Edition v1.0.4              ║"
+echo "  ║     DS1 HUNTER  Community Edition v1.0.5              ║"
 echo "  ║          \"Hunt. Chain. Prove.\"                        ║"
 echo "  ║               by DigitalSecurity1                     ║"
 echo "  ║                                                       ║"
@@ -214,7 +232,7 @@ echo -e "${RESET}"
 # macOS check
 [[ "$(uname -s)" != "Darwin" ]] && {
   echo -e "${RED}[✗] This installer is for macOS only.${RESET}"
-  echo -e "    For Linux, use: ds1hunter-CE-v1.0.4-linux.run"
+  echo -e "    For Linux, use: ds1hunter-CE-v1.0.5-linux.run"
   exit 1
 }
 
@@ -279,7 +297,7 @@ printf "  ║   Size   : %-51s║\n" "$FINAL_SIZE"
 printf "  ║   SHA256 : %-51s║\n" "${SHA256:0:48}..."
 echo "  ║                                                             ║"
 echo "  ║   Users download and run:                                   ║"
-echo "  ║     sudo bash ds1hunter-CE-v1.0.4-macos.run                ║"
+echo "  ║     sudo bash ds1hunter-CE-v${VERSION}-macos.run                ║"
 echo "  ║                                                             ║"
 echo "  ║   Protection layers:                                        ║"
 echo "  ║     Python   -> .pyc bytecode (Python 3.13, no decompiler) ║"

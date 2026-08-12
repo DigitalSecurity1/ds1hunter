@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║          DS1 Hunter v1.0.4 - Linux Production Installer      ║
+# ║          DS1 Hunter v1.0.5 - Linux Production Installer      ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
@@ -52,7 +52,7 @@ INSTALL_DIR="/opt/ds1hunter"
 SERVICE_USER="ds1hunter"
 API_PORT=18000
 UI_PORT=13000
-VERSION="1.0.4"
+VERSION="1.0.5"
 CERT_DIR="$INSTALL_DIR/deploy/certs"
 CERT="$CERT_DIR/ds1hunter.crt"
 KEY="$CERT_DIR/ds1hunter.key"

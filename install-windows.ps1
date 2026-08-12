@@ -1,13 +1,33 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║       DS1 Hunter v1.0.3 - Windows Production Installer       ║
+# ║       DS1 Hunter v1.0.5 - Windows Production Installer       ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 #
 # Usage:  (extracted automatically by the .ps1 self-extractor)
-# Tested: Windows 10 21H2+, Windows 11, Windows Server 2022+
+# Tested: Windows 10 Home/Pro 21H2+, Windows 11 Home/Pro, Windows Server 2022+
 #
 # ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.5  2026-07-13  Accuracy overhaul, BOLA wiring, new coverage, Windows fix:
+#                     · Fixed a real Windows-specific startup bug: the OOB DNS
+#                       server (new in v1.0.4) could crash its background
+#                       thread on Windows' default event loop without ever
+#                       signalling readiness, forcing every single app
+#                       startup to block for a fixed 5s timeout — compounded
+#                       across install steps (migrate, collectstatic, service
+#                       start), this was the likely cause of v1.0.4 installs
+#                       stalling/failing on Windows. Now uses SelectorEventLoop
+#                       on Windows (mature UDP support) and always signals
+#                       readiness even on failure, matching the HTTP OOB
+#                       server's existing safe pattern.
+#                     · Fixed the false-positive flood at its root (accuracy
+#                       scorer bypass removed + ~25 scoring-gap fixes)
+#                     · Real two-role BOLA/IDOR testing wired into Hunt
+#                     · Race-condition detection upgraded (single-packet sync)
+#                     · New gRPC / gRPC-Web scanner
+#                     · Log4Shell now OOB-confirmed instead of using a dead
+#                       placeholder domain
+#
 # v1.0.3  2026-06-16  Bug fixes & scanner improvements (patch release):
 #                     · Active Scanner: 7 scanner improvements —
 #                       SQLi error regex expanded to 6 additional DB stacks;
@@ -56,7 +76,7 @@ try {
 $INSTALL_DIR = "C:\ds1hunter"
 $API_PORT    = 18000
 $UI_PORT     = 13000
-$VERSION     = "1.0.3"
+$VERSION     = "1.0.5"
 $CERT_DIR    = "$INSTALL_DIR\certs"
 $CERT        = "$CERT_DIR\ds1hunter.crt"
 $KEY         = "$CERT_DIR\ds1hunter.key"
@@ -172,7 +192,7 @@ Write-Host ""
 
 # ── Admin check ────────────────────────────────────────────────────────────────
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) { Write-Die "Run as Administrator:`n  Right-click PowerShell > Run as Administrator`n  Then: powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.3-windows.ps1" }
+if (-not $isAdmin) { Write-Die "Run as Administrator:`n  Right-click PowerShell > Run as Administrator`n  Then: powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v$VERSION-windows.ps1" }
 
 # Windows version check (10+)
 $winVer = [System.Environment]::OSVersion.Version

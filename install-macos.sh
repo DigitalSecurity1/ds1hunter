@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ╔══════════════════════════════════════════════════════════════╗
-# ║        DS1 Hunter v1.0.4 - macOS Production Installer        ║
+# ║        DS1 Hunter v1.0.5 - macOS Production Installer        ║
 # ║                   by DigitalSecurity1                        ║
 # ║               "Hunt. Chain. Prove."                          ║
 # ╚══════════════════════════════════════════════════════════════╝
@@ -9,6 +9,22 @@
 # Tested: macOS Ventura 13, Sonoma 14, Sequoia 15 (Intel + Apple Silicon)
 #
 # ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.5  2026-07-13  Accuracy overhaul + BOLA wiring + new coverage:
+#                     · TLS cert/key ownership fixed: key now owned directly
+#                       by the service user (was group-readable via chown
+#                       root:group, which could fail silently on some setups)
+#                     · Cert trust check added before re-adding to System
+#                       Keychain (avoids a redundant password prompt on
+#                       reinstall); /usr/local/bin created if missing before
+#                       the CLI symlink is placed there
+#                     · Accuracy scorer bypass removed (root cause of a
+#                       false-positive flood) + ~25 scoring-gap fixes
+#                     · Real two-role BOLA/IDOR testing wired into Hunt
+#                     · Race-condition detection upgraded (single-packet sync)
+#                     · New gRPC / gRPC-Web scanner
+#                     · Log4Shell now OOB-confirmed instead of a dead
+#                       placeholder domain
+#
 # v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
 #                     · 8 false-positive fixes: LDAP injection confirmation
 #                       now requires error keywords (not just HTTP 500);
@@ -69,7 +85,7 @@ INSTALL_DIR="/opt/ds1hunter"
 SERVICE_USER="_ds1hunter"
 API_PORT=18000
 UI_PORT=13000
-VERSION="1.0.4"
+VERSION="1.0.5"
 CERT_DIR="$INSTALL_DIR/deploy/certs"
 CERT="$CERT_DIR/ds1hunter.crt"
 KEY="$CERT_DIR/ds1hunter.key"
@@ -444,34 +460,24 @@ CNFEOF
   ok "TLS certificate generated"
 fi
 
-chmod 640 "$KEY"
+chmod 600 "$KEY"
 chmod 644 "$CERT"
 
-# Make key readable by the service user
-chown root:"$SERVICE_USER" "$KEY" 2>/dev/null || chmod 644 "$KEY"
+# Make key owned by the service user (it runs daphne and serve)
+chown "$SERVICE_USER" "$KEY"
 
-# Trust the certificate in the macOS System Keychain
-info "Adding certificate to macOS System Keychain..."
-if security add-trusted-cert -d -r trustRoot \
-     -k /Library/Keychains/System.keychain \
-     "$CERT" 2>/dev/null; then
-  ok "Certificate trusted in System Keychain"
+# Trust the certificate in the macOS System Keychain (one prompt, covers all browsers)
+if security verify-cert -c "$CERT" -k /Library/Keychains/System.keychain 2>/dev/null; then
+  ok "Certificate already trusted in System Keychain"
 else
-  warn "Could not auto-trust certificate in System Keychain."
-fi
-
-# Also trust in the actual user's Login keychain (needed for Safari)
-if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-  USER_HOME=$(eval echo "~$SUDO_USER")
-  LOGIN_KC="$USER_HOME/Library/Keychains/login.keychain-db"
-  if [[ -f "$LOGIN_KC" ]]; then
-    if sudo -u "$SUDO_USER" security add-trusted-cert -r trustRoot \
-         -k "$LOGIN_KC" "$CERT" 2>/dev/null; then
-      ok "Certificate trusted in $SUDO_USER Login Keychain (Safari will trust it)"
-    else
-      warn "Could not auto-trust in Login Keychain. Safari fix:"
-      warn "  Open Keychain Access > Login > Import $CERT > Trust > Always Trust"
-    fi
+  info "Adding certificate to macOS System Keychain (you will see one password prompt)..."
+  if security add-trusted-cert -d -r trustRoot \
+       -k /Library/Keychains/System.keychain \
+       "$CERT" 2>/dev/null; then
+    ok "Certificate trusted in System Keychain"
+  else
+    warn "Could not auto-trust certificate. To trust manually:"
+    warn "  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain $CERT"
   fi
 fi
 
@@ -622,11 +628,12 @@ chmod 700 /var/lib/ds1hunter/proxy_ca
 
 # Installation directory
 chown -R "$SERVICE_USER" "$INSTALL_DIR"
-# Key must be readable by the service user that runs serve and daphne
-chmod 640 "$KEY"
-chown root:"$SERVICE_USER" "$KEY"   # service user's group can read the key
+# Key owned by service user — daphne and serve both run as $SERVICE_USER
+chmod 600 "$KEY"
+chown "$SERVICE_USER" "$KEY"
 
 # CLI symlink (available to all users)
+mkdir -p /usr/local/bin
 ln -sf "$INSTALL_DIR/.venv/bin/ds1hunter" /usr/local/bin/ds1hunter
 ok "ds1hunter command available system-wide"
 ok "Permissions set"

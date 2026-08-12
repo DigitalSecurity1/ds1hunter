@@ -52,9 +52,9 @@ Go to the [Releases](../../releases/latest) page and download the installer for 
 
 | Platform | File | Verify |
 |----------|------|--------|
-| Linux | `ds1hunter-CE-v1.0.0-linux.run` | `.sha256` |
-| macOS | `ds1hunter-CE-v1.0.0-macos.run` | `.sha256` |
-| Windows | `ds1hunter-CE-v1.0.0-windows.ps1` | `.sha256` |
+| Linux | `ds1hunter-CE-v1.0.5-linux.run` | `.sha256` |
+| macOS | `ds1hunter-CE-v1.0.5-macos.run` | `.sha256` |
+| Windows | `ds1hunter-CE-v1.0.5-windows.ps1` | `.sha256` |
 
 ---
 
@@ -63,7 +63,7 @@ Go to the [Releases](../../releases/latest) page and download the installer for 
 ### Linux (Kali, Debian, Ubuntu)
 
 ```bash
-sudo bash ds1hunter-CE-v1.0.0-linux.run
+sudo bash ds1hunter-CE-v1.0.5-linux.run
 ```
 
 See [docs/linux.md](docs/linux.md) for full details.
@@ -71,13 +71,13 @@ See [docs/linux.md](docs/linux.md) for full details.
 ### macOS (Ventura, Sonoma, Sequoia)
 
 ```bash
-sudo bash ds1hunter-CE-v1.0.0-macos.run
+sudo bash ds1hunter-CE-v1.0.5-macos.run
 ```
 
 If macOS Gatekeeper blocks it:
 ```bash
-xattr -d com.apple.quarantine ds1hunter-CE-v1.0.0-macos.run
-sudo bash ds1hunter-CE-v1.0.0-macos.run
+xattr -d com.apple.quarantine ds1hunter-CE-v1.0.5-macos.run
+sudo bash ds1hunter-CE-v1.0.5-macos.run
 ```
 
 See [docs/macos.md](docs/macos.md) for full details.
@@ -85,7 +85,7 @@ See [docs/macos.md](docs/macos.md) for full details.
 ### Windows (PowerShell as Administrator)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.0-windows.ps1
+powershell -ExecutionPolicy Bypass -File ds1hunter-CE-v1.0.5-windows.ps1
 ```
 
 See [docs/windows.md](docs/windows.md) for full details.
@@ -105,12 +105,18 @@ The installer prints your admin credentials once at the end. Save them.
 
 **DS1 Hunter runs as a self-hosted web application.** The Web UI at `https://127.0.0.1:13000` is the main interface — all 43 modules (Proxy, Repeater, Intruder, Spider, API Audit, Code Review, Mobile, and more) are accessible from there.
 
-The CLI is a shortcut specifically for the Hunt scanner — the 5-phase attack pipeline:
+The CLI covers two of those without a browser — the Hunt scanner (5-phase web attack pipeline) and Mobile Pentest static analysis:
 
 ```bash
 ds1hunter https://target.com --depth deep --think
 ds1hunter https://target.com --depth aggressive --think --waf-bypass
+
+ds1hunter mobile app.apk
+ds1hunter mobile app.ipa --output sarif --output-dir ./reports
+ds1hunter mobile app.apk --dump-frida-scripts ./frida-scripts
+
 ds1hunter --help
+ds1hunter mobile --help
 ```
 
 For everything else, use the Web UI.
@@ -123,15 +129,15 @@ Always verify the SHA256 checksum before running:
 
 ```bash
 # Linux
-sha256sum ds1hunter-CE-v1.0.0-linux.run
-cat ds1hunter-CE-v1.0.0-linux.run.sha256
+sha256sum ds1hunter-CE-v1.0.5-linux.run
+cat ds1hunter-CE-v1.0.5-linux.run.sha256
 
 # macOS
-shasum -a 256 ds1hunter-CE-v1.0.0-macos.run
-cat ds1hunter-CE-v1.0.0-macos.run.sha256
+shasum -a 256 ds1hunter-CE-v1.0.5-macos.run
+cat ds1hunter-CE-v1.0.5-macos.run.sha256
 
 # Windows (PowerShell)
-Get-FileHash ds1hunter-CE-v1.0.0-windows.ps1 -Algorithm SHA256
+Get-FileHash ds1hunter-CE-v1.0.5-windows.ps1 -Algorithm SHA256
 ```
 
 Compare the output. They must match exactly.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DS1 Hunter - Release Builder
-# Produces: dist/ds1hunter-CE-v1.0.4-linux.run
+# Produces: dist/ds1hunter-CE-v1.0.5-linux.run
 #
 # Protection stack:
 #   Python  -> compiled to optimized .pyc (Python 3.13 bytecode, no public decompiler)
@@ -8,6 +8,50 @@
 #   Package  -> self-extracting .run (bash header + base64-encoded tarball)
 #
 # ── Changelog ──────────────────────────────────────────────────────────────
+# v1.0.5  2026-07-13  Accuracy overhaul + BOLA wiring + new coverage (this build):
+#                     · Fixed root cause of the false-positive flood: accuracy
+#                       scorer had a blanket bypass letting ANY high/critical
+#                       finding skip confidence scoring entirely — removed,
+#                       plus ~25 individual scoring-gap fixes across two audit
+#                       passes (incl. a NoSQLi/SQLi miscategorization bug)
+#                     · File upload check no longer blind-probes static
+#                       assets (JS/CSS/image URLs) as fake upload endpoints
+#                     · Host Header Injection deduped per-host (was firing
+#                       once per crawled path)
+#                     · Spider progress bar now reaches 100% on completion
+#                     · Active Scanner: auto-verify findings after scan
+#                       completes (was a manual-only "Verify" click before)
+#                     · Log4Shell now uses real OOB DNS confirmation instead
+#                       of a dead placeholder domain; fixed a bug in the OOB
+#                       client where DNS-only callbacks were never checked
+#                       (also fixes the pre-existing Java-deser URLDNS gadget)
+#                     · Real two-role BOLA/IDOR testing wired into Hunt:
+#                       second-identity auth config, isolated per-role
+#                       sessions, "Cross-User Testing" picker in the auth UI
+#                     · Race-condition detection upgraded to single-packet /
+#                       last-byte-sync timing (Turbo Intruder technique)
+#                     · New gRPC / gRPC-Web scanner (detection + Server
+#                       Reflection exposure check), full web page under
+#                       API Testing
+#
+# v1.0.5  2026-07-05  Capability + CVE template expansion release:
+#                     · 6 major detection gaps closed:
+#                       1. Stored XSS: confirmed canary re-appear on crawl
+#                       2. Second-order SQLi: OOB DNS exfil via 4 DB engines
+#                       3. IDOR/BOLA: post-Phase-3 unauthenticated re-fetch sweep
+#                       4. Race conditions: concurrent POST flood sweep (10 req)
+#                       5. Business logic: gift card stacking, free shipping
+#                          bypass, checkout step skip detection
+#                       6. Deserialization: Java URLDNS OOB + Python pickle
+#                          __reduce__ OOB probe + safe error probe
+#                     · Active Scan auth UI: 6 auth types (none, form,
+#                       bearer, cookie, basic, oauth2) — replaces flat header
+#                     · CVE templates: 5060 total (+40 new), 254 for 2025,
+#                       69 for 2026, 21M uncompressed
+#                     · Content-based FP prevention: 13 validation gates
+#                     · Chain Mapper: 11 new rules, dedup by vuln-type
+#                       sequence, step dual-key fix
+#
 # v1.0.4  2026-06-18  Accuracy & OOB infrastructure release:
 #                     · 8 false-positive fixes across LDAP injection,
 #                       CORS, integer overflow, S3 403, CSS injection,
@@ -40,7 +84,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.4"
+VERSION="1.0.5"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(mktemp -d /tmp/ds1hunter-build-XXXXXX)"
 PAYLOAD="$BUILD_DIR/ds1hunter-${VERSION}"
@@ -65,7 +109,7 @@ trap 'echo -e "\n${YELLOW}[!] Cleaning up $BUILD_DIR ...${RESET}"; rm -rf "$BUIL
 
 echo -e "\n${CYAN}${BOLD}"
 echo "  ╔═══════════════════════════════════════════════════════╗"
-echo "  ║       DS1 Hunter v${VERSION} — Release Builder            ║"
+echo "  ║      DS1 Hunter v${VERSION} — Release Builder             ║"
 echo "  ║              by DigitalSecurity1                      ║"
 echo "  ╚═══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
@@ -91,7 +135,7 @@ step "2 / 4  Assembling distribution payload"
 
 info "Copying project files to build directory..."
 
-# Copy source (exclude dev artifacts)
+# Copy source (Linux-only payload — no other platform files, no dev artifacts)
 rsync -a \
   --exclude='.venv/' \
   --exclude='node_modules/' \
@@ -104,6 +148,12 @@ rsync -a \
   --exclude='ds1hunter.egg-info/' \
   --exclude='dist/' \
   --exclude='windows/' \
+  --exclude='.git/' \
+  --exclude='.claude/' \
+  --exclude='.pytest_cache/' \
+  --exclude='*.deb' \
+  --exclude='*.log' \
+  --exclude='generate_*.py' \
   --exclude='frontend/src/' \
   --exclude='frontend/build/' \
   --exclude='frontend/.env' \
@@ -113,10 +163,26 @@ rsync -a \
   --exclude='*.md' \
   --exclude='*.csv' \
   --exclude='*.txt' \
+  --exclude='*.pdf' \
+  --exclude='*.docx' \
   --exclude='docker-compose.yml' \
   --exclude='Dockerfile' \
   --exclude='setup.sh' \
   --exclude='make-release.sh' \
+  --exclude='make-release-macos.sh' \
+  --exclude='make-release-windows.sh' \
+  --exclude='install-macos.sh' \
+  --exclude='install-windows.ps1' \
+  --exclude='.github/' \
+  --exclude='web/ds1hunter_project/settings_windows.py' \
+  --exclude='web/ds1hunter_project/settings_windows.pyc' \
+  --exclude='book_parts/' \
+  --exclude='build_book.py' \
+  --exclude='github-release' \
+  --exclude='pyarmor.bug.log' \
+  --exclude='SYSTEM_ANALYSIS.txt' \
+  --exclude='SCAN_QUALITY_SCORECARD.txt' \
+  --exclude='MOBILE_TESTER_GUIDE.txt' \
   "$SRC_DIR/" "$PAYLOAD/"
 
 # Bring back requirements.txt (needed by installer)
@@ -182,13 +248,13 @@ info "Building self-extracting .run..."
 cat > "$OUTPUT" << 'SFXEOF'
 #!/usr/bin/env bash
 # +=========================================================+
-# |   DS1 Hunter - Community Edition v1.0.4                 |
+# |   DS1 Hunter - Community Edition v1.0.5                 |
 # |   Linux Self-Extracting Installer                        |
 # |   by DigitalSecurity1                                    |
 # +=========================================================+
 #
-# Usage: sudo bash ds1hunter-CE-v1.0.4-linux.run
-# Tested: Kali Linux 2024+, Debian 12, Ubuntu 22.04/24.04
+# Usage: sudo bash ds1hunter-CE-v1.0.5-linux.run
+# Tested: Kali Linux 2025+, Debian 12, Ubuntu 22.04/24.04
 
 set -euo pipefail
 
@@ -202,7 +268,7 @@ RESET="\033[0m"
 echo -e "${CYAN}${BOLD}"
 echo "  +=========================================================+"
 echo "  |                                                         |"
-echo "  |      DS1 HUNTER  Community Edition v1.0.4               |"
+echo "  |      DS1 HUNTER  Community Edition v1.0.5               |"
 echo "  |         \"Hunt. Chain. Prove.\"                           |"
 echo "  |              by DigitalSecurity1                        |"
 echo "  |                                                         |"
@@ -270,7 +336,7 @@ printf "  ║   Size   : %-51s║\n" "$FINAL_SIZE"
 printf "  ║   SHA256 : %-51s║\n" "${SHA256:0:48}..."
 echo "  ║                                                             ║"
 echo "  ║   Users download and run:                                   ║"
-echo "  ║     sudo bash ds1hunter-CE-v1.0.4-linux.run                ║"
+echo "  ║     sudo bash ds1hunter-CE-v1.0.5-linux.run                ║"
 echo "  ║                                                             ║"
 echo "  ║   Protection layers:                                        ║"
 echo "  ║     Python  -> .pyc bytecode (Python 3.13, no decompiler)  ║"
