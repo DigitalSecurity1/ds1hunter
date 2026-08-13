@@ -287,6 +287,11 @@ Write-Host "  Verifying installer archive..." -ForegroundColor DarkGray
 $tmpDir  = Join-Path $env:TEMP ("ds1hunter-install-" + [System.IO.Path]::GetRandomFileName().Replace(".", ""))
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
+# Best-effort Defender exclusion before any payload file touches disk here -
+# real-time protection scanning thousands of small files during extraction is
+# also where most of the "please wait" time goes on a fresh Windows install.
+try { Add-MpPreference -ExclusionPath $tmpDir -ErrorAction SilentlyContinue } catch { }
+
 # Cleanup on exit
 $null = Register-EngineEvent PowerShell.Exiting -Action { Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
 
@@ -308,7 +313,13 @@ $bytes = [Convert]::FromBase64String($b64)
 
 $zipPath = Join-Path $tmpDir "payload.zip"
 [System.IO.File]::WriteAllBytes($zipPath, $bytes)
-Expand-Archive -Path $zipPath -DestinationPath $tmpDir -Force
+
+# Expand-Archive's PowerShell cmdlet wrapper has significant per-entry overhead
+# across 10,000+ small files (slow) and its own internal cleanup logic has been
+# a source of extraction bugs on real hardware. Extract directly via .NET's
+# ZipFile API instead - same underlying format, no cmdlet wrapper in between.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $tmpDir)
 
 # Find and run the inner installer
 $installer = Get-ChildItem -Path $tmpDir -Filter "install-windows.ps1" -Recurse | Select-Object -First 1

@@ -198,6 +198,16 @@ if (-not $isAdmin) { Write-Die "Run as Administrator:`n  Right-click PowerShell 
 $winVer = [System.Environment]::OSVersion.Version
 if ($winVer.Major -lt 10) { Write-Die "Windows 10 or newer is required." }
 
+# Add the Defender exclusion as early as possible, before any payload files are
+# copied or written - not just at the end (Step 10). Real-time protection can
+# quarantine/block a copy mid-install ("...contains a virus or potentially
+# unwanted software") if the exclusion isn't in place yet when the files first
+# land on disk. Best-effort: some environments manage Defender via policy and
+# will reject this silently, which the later Step 10 block also warns about.
+try {
+    Add-MpPreference -ExclusionPath $INSTALL_DIR -ErrorAction SilentlyContinue
+} catch { }
+
 # ══════════════════════════════════════════════════════════════════════════════
 Write-Step "Step 1 / 12  Checking system dependencies"
 # ══════════════════════════════════════════════════════════════════════════════
@@ -657,6 +667,21 @@ Set-Location "$INSTALL_DIR\web"
 [System.IO.File]::WriteAllText("$BIN_DIR\start-api.ps1", $apiScript, $utf8NoBom)
 
 $uiScript = @"
+# Wait for the API to actually be accepting connections before serving the UI.
+# NSSM's DependOnService only guarantees the API's process has launched, not
+# that daphne has finished cert/Django init and bound its HTTPS listener -
+# without this wait, the UI can come up first (it's a much lighter process)
+# and serve a page whose first API call fails, on whichever boot/service
+# restart loses the race.
+`$deadline = (Get-Date).AddSeconds(60)
+while ((Get-Date) -lt `$deadline) {
+    try {
+        `$client = New-Object System.Net.Sockets.TcpClient
+        `$client.Connect('127.0.0.1', $API_PORT)
+        `$client.Close()
+        break
+    } catch { Start-Sleep -Milliseconds 500 }
+}
 Set-Location "$INSTALL_DIR\frontend"
 & "$NODE" "$SERVE_MAIN" ``
     -s build ``
