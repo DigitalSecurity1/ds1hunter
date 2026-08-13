@@ -575,18 +575,30 @@ icacls $KEY /inheritance:r /grant:r "SYSTEM:R" /grant:r "Administrators:R" | Out
 Write-Step "Step 7 / 12  Generating secure credentials"
 # ══════════════════════════════════════════════════════════════════════════════
 
-$SECRET_KEY = & $VENV_PYTHON -c "import secrets; print(secrets.token_urlsafe(50))"
-$ADMIN_PASS = & $VENV_PYTHON -c @"
+# Take only the last non-blank output line from each call - defends against any
+# stray stdout (a first-run interpreter banner, a deprecation warning, etc.)
+# silently getting captured alongside the actual value on some machines.
+function Get-LastLine([string[]]$Output) {
+    $lines = $Output | Where-Object { $_ -and $_.Trim() -ne "" }
+    return ($lines | Select-Object -Last 1).Trim()
+}
+
+$SECRET_KEY = Get-LastLine (& $VENV_PYTHON -c "import secrets; print(secrets.token_urlsafe(50))")
+$ADMIN_PASS = Get-LastLine (& $VENV_PYTHON -c @"
 import secrets, string
 # Letters + digits only: no special chars that are hard to read or type
 chars = string.ascii_letters + string.digits
 print(''.join(secrets.choice(chars) for _ in range(24)))
-"@
-$ADMIN_URL_TOKEN = & $VENV_PYTHON -c "import secrets; print(secrets.token_hex(6))"
+"@)
+$ADMIN_URL_TOKEN = Get-LastLine (& $VENV_PYTHON -c "import secrets; print(secrets.token_hex(6))")
 $ADMIN_URL       = "ds1-ops-$ADMIN_URL_TOKEN/"
 
+if ($ADMIN_PASS.Length -ne 24) {
+    throw "Admin password generation produced unexpected output (got $($ADMIN_PASS.Length) chars, expected 24) - refusing to continue with a possibly-corrupted credential."
+}
+
 Write-Ok "SECRET_KEY generated (50 chars)"
-Write-Ok "Admin password generated (22 chars)"
+Write-Ok "Admin password generated (24 chars)"
 Write-Ok "Admin URL randomized"
 
 
@@ -684,7 +696,7 @@ $adminPy = [System.IO.Path]::Combine($env:TEMP, "ds1_create_admin.py")
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($adminPy, @"
 import os
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, authenticate
 User = get_user_model()
 pwd = os.environ['DS1_ADMIN_PASS']
 if User.objects.filter(username='admin').exists():
@@ -695,10 +707,19 @@ if User.objects.filter(username='admin').exists():
 else:
     User.objects.create_superuser('admin', 'admin@ds1hunter.local', pwd)
     print('Admin user created.')
+
+# Self-verify immediately - never let a silently-wrong credential reach the
+# user's login screen. If this ever fails, the install fails loudly here,
+# with a clear reason, instead of surfacing as a confusing 'Invalid
+# credentials' error at first login with no diagnostic trail.
+check = authenticate(username='admin', password=pwd)
+if check is None:
+    raise SystemExit('FATAL: admin credential failed self-verification immediately after creation')
+print('Admin credential self-verified.')
 "@, $utf8NoBom)
 Push-Location "$INSTALL_DIR\web"
 & $VENV_PYTHON "$INSTALL_DIR\web\manage.py" shell -c "exec(open(r'$adminPy').read())"
-if ($LASTEXITCODE -ne 0) { throw "Failed to create admin user" }
+if ($LASTEXITCODE -ne 0) { throw "Failed to create/verify admin user" }
 Pop-Location
 Remove-Item $adminPy -ErrorAction SilentlyContinue
 Remove-Item Env:DS1_ADMIN_PASS -ErrorAction SilentlyContinue
@@ -874,7 +895,12 @@ Write-Host "  ║                                                               
 Write-Host ("  ║  {0,-61}║" -f "  Username :  admin") -ForegroundColor Red
 Write-Host ("  ║  {0,-61}║" -f "  Password :  $ADMIN_PASS") -ForegroundColor Red
 Write-Host "  ║                                                               ║" -ForegroundColor Red
-Write-Host "  ╠═══════════════════════════════════════════════════════════════╣" -ForegroundColor Green
+Write-Host "  ╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Password (select this line only, no leading/trailing spaces):" -ForegroundColor Yellow
+Write-Host "$ADMIN_PASS" -ForegroundColor White
+Write-Host ""
+Write-Host "  ╔═══════════════════════════════════════════════════════════════╗" -ForegroundColor Green
 Write-Host "  ║  BROWSER SETUP                                                ║" -ForegroundColor Green
 Write-Host "  ║                                                               ║" -ForegroundColor Green
 Write-Host "  ║  Edge / Chrome: certificate auto-trusted, no action needed.   ║" -ForegroundColor Green
