@@ -667,21 +667,30 @@ Set-Location "$INSTALL_DIR\web"
 [System.IO.File]::WriteAllText("$BIN_DIR\start-api.ps1", $apiScript, $utf8NoBom)
 
 $uiScript = @"
-# Wait for the API to actually be accepting connections before serving the UI.
-# NSSM's DependOnService only guarantees the API's process has launched, not
-# that daphne has finished cert/Django init and bound its HTTPS listener -
-# without this wait, the UI can come up first (it's a much lighter process)
-# and serve a page whose first API call fails, on whichever boot/service
-# restart loses the race.
+# Wait for the API to actually be SERVING before serving the UI - not just for
+# its TCP port to be open. NSSM's DependOnService only guarantees the API's
+# process has launched; a bare TCP connect can succeed the moment daphne binds
+# the listening socket, well before Django has finished its cold-start (first
+# request through the full middleware/ASGI stack is measurably slower than
+# steady-state). A login attempt that lands in that gap fails at the network
+# layer, which the frontend used to show as "Invalid credentials" - a genuine
+# server-not-ready condition that only looked like a wrong password.
 `$deadline = (Get-Date).AddSeconds(60)
+`$origCb = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { `$true }
 while ((Get-Date) -lt `$deadline) {
     try {
-        `$client = New-Object System.Net.Sockets.TcpClient
-        `$client.Connect('127.0.0.1', $API_PORT)
-        `$client.Close()
-        break
-    } catch { Start-Sleep -Milliseconds 500 }
+        `$resp = Invoke-WebRequest -Uri "https://127.0.0.1:$API_PORT/" -UseBasicParsing -TimeoutSec 3
+        if (`$resp.StatusCode -lt 500) { break }
+    } catch [System.Net.WebException] {
+        `$errResp = `$_.Exception.Response
+        if (`$errResp -and [int]`$errResp.StatusCode -lt 500) { break }
+        Start-Sleep -Milliseconds 500
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
 }
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = `$origCb
 Set-Location "$INSTALL_DIR\frontend"
 & "$NODE" "$SERVE_MAIN" ``
     -s build ``
