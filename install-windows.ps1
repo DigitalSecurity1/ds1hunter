@@ -561,18 +561,35 @@ print('OK')
 
 # Firefox has its own certificate store and ignores the Windows trust store by default.
 # Enable ImportEnterpriseRoots policy so Firefox trusts Windows Root CA certificates.
+# Modern Firefox installers default to a PER-USER install (%LOCALAPPDATA%) unless
+# "install for all users" was explicitly chosen, so the two system-wide Program
+# Files paths alone miss a large share of real installs - silently, since nothing
+# downstream reports that Firefox trust setup never actually ran.
 $firefoxDirs = @(
     "C:\Program Files\Mozilla Firefox",
-    "C:\Program Files (x86)\Mozilla Firefox"
+    "C:\Program Files (x86)\Mozilla Firefox",
+    "$env:LOCALAPPDATA\Mozilla Firefox"
 )
-$firefoxDir = $firefoxDirs | Where-Object { Test-Path "$_\firefox.exe" } | Select-Object -First 1
-if ($firefoxDir) {
+# Windows' own App Paths registry key records wherever the installer actually put
+# firefox.exe, regardless of which of the above locations (or another one
+# entirely) it chose - more reliable than guessing paths, so check it too.
+try {
+    $appPathKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\firefox.exe"
+    $regPath = (Get-Item -Path $appPathKey -ErrorAction SilentlyContinue).GetValue('')
+    if ($regPath -and (Test-Path $regPath)) {
+        $firefoxDirs += (Split-Path -Path $regPath -Parent)
+    }
+} catch { }
+$firefoxInstalls = $firefoxDirs | Where-Object { Test-Path "$_\firefox.exe" } | Select-Object -Unique
+if ($firefoxInstalls) {
     Write-Info "Configuring Firefox to trust Windows Root CA certificates..."
-    $policiesDir = "$firefoxDir\distribution"
-    New-Item -Path $policiesDir -ItemType Directory -Force | Out-Null
-    $policiesJson = '{"policies":{"Certificates":{"ImportEnterpriseRoots":true}}}'
-    [System.IO.File]::WriteAllText("$policiesDir\policies.json", $policiesJson, [System.Text.Encoding]::UTF8)
-    Write-Ok "Firefox configured — DS1 Hunter certificate trusted in Firefox"
+    foreach ($firefoxDir in $firefoxInstalls) {
+        $policiesDir = "$firefoxDir\distribution"
+        New-Item -Path $policiesDir -ItemType Directory -Force | Out-Null
+        $policiesJson = '{"policies":{"Certificates":{"ImportEnterpriseRoots":true}}}'
+        [System.IO.File]::WriteAllText("$policiesDir\policies.json", $policiesJson, [System.Text.Encoding]::UTF8)
+    }
+    Write-Ok "Firefox configured — DS1 Hunter certificate trusted in Firefox ($($firefoxInstalls.Count) install(s) found)"
 } else {
     Write-Warn "Firefox not detected. If you use Firefox, visit https://127.0.0.1:$API_PORT once first to accept the certificate."
 }
@@ -939,8 +956,13 @@ Write-Host "  ║  BROWSER SETUP                                                
 Write-Host "  ║                                                               ║" -ForegroundColor Green
 Write-Host "  ║  Edge / Chrome: certificate auto-trusted, no action needed.   ║" -ForegroundColor Green
 Write-Host "  ║  Firefox: auto-configured to trust Windows Root CA store.     ║" -ForegroundColor Green
-Write-Host "  ║    If Firefox still shows a warning, restart Firefox first.   ║" -ForegroundColor Green
-Write-Host "  ║    Or visit https://127.0.0.1:$API_PORT once and accept cert.    ║" -ForegroundColor Green
+Write-Host "  ║    If Firefox still shows 'Not Secure', restart Firefox       ║" -ForegroundColor Green
+Write-Host "  ║    fully (all windows closed) and reload the page.            ║" -ForegroundColor Green
+Write-Host "  ║    Still not trusted? Import it directly (works every time):  ║" -ForegroundColor Green
+Write-Host "  ║      Firefox > Settings > Privacy & Security > Certificates > ║" -ForegroundColor Green
+Write-Host "  ║      View Certificates > Authorities > Import                 ║" -ForegroundColor Green
+Write-Host ("  ║  {0,-61}║" -f "      File: $CERT") -ForegroundColor Green
+Write-Host "  ║      Check 'Trust this CA to identify websites' > OK          ║" -ForegroundColor Green
 Write-Host "  ║                                                               ║" -ForegroundColor Green
 Write-Host "  ╠═══════════════════════════════════════════════════════════════╣" -ForegroundColor Green
 Write-Host "  ║  SERVICE MANAGEMENT                                           ║" -ForegroundColor Green
