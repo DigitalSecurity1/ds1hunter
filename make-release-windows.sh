@@ -220,6 +220,21 @@ info "CLI source .py exposed  : $CLI_PY"
 # ── Step 5: Build self-extracting PowerShell installer ───────────────────────
 step "5 / 5  Building self-extracting PowerShell installer"
 
+# Windows/NTFS forbids < > : " | ? * in filenames (":" doubles as the Alternate
+# Data Stream separator). Source files created on Linux/macOS can contain these
+# legally, but Expand-Archive silently mis-extracts them on real Windows, which
+# then breaks its own cleanup logic. Fail the build here instead of shipping
+# a package that only breaks on the target OS.
+info "Checking for Windows-illegal filenames..."
+BAD_NAMES=$(find "$PAYLOAD" -name '*[<>:"|?*]*' 2>/dev/null)
+if [ -n "$BAD_NAMES" ]; then
+  echo -e "${RED}${BOLD}[!] Found filenames illegal on Windows/NTFS:${RESET}"
+  echo "$BAD_NAMES"
+  echo -e "${RED}Rename these files (remove < > : \" | ? *) before building.${RESET}"
+  exit 1
+fi
+ok "No Windows-illegal filenames found"
+
 info "Creating ZIP payload..."
 cd "$BUILD_DIR"
 zip -r -q payload.zip "ds1hunter-${VERSION}/"
