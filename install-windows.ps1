@@ -589,7 +589,17 @@ if ($firefoxInstalls) {
         $policiesJson = '{"policies":{"Certificates":{"ImportEnterpriseRoots":true}}}'
         [System.IO.File]::WriteAllText("$policiesDir\policies.json", $policiesJson, [System.Text.Encoding]::UTF8)
     }
-    Write-Ok "Firefox configured — DS1 Hunter certificate trusted in Firefox ($($firefoxInstalls.Count) install(s) found)"
+    Write-Ok "Firefox configured - DS1 Hunter certificate trusted in Firefox ($($firefoxInstalls.Count) install(s) found)"
+
+    # Firefox only reads distribution\policies.json at its own startup. If
+    # Firefox is already open right now, this trust setting will silently
+    # not apply until the user fully closes and reopens it - easy to miss
+    # since nothing else in the install fails or looks wrong. Surface this
+    # loudly, right here, instead of leaving it buried in the final summary.
+    $firefoxRunning = Get-Process -Name "firefox" -ErrorAction SilentlyContinue
+    if ($firefoxRunning) {
+        Write-Warn "Firefox is currently running - it will keep showing 'Not Secure' until you fully close it (all windows) and reopen it. This is a one-time step."
+    }
 } else {
     Write-Warn "Firefox not detected. If you use Firefox, visit https://127.0.0.1:$API_PORT once first to accept the certificate."
 }
